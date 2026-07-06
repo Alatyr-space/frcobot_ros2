@@ -1,0 +1,94 @@
+###############################################
+# MoveIt Servo parameters for Fairino FR10 / fairino10_v6_moveit2_config
+# Place this file in:
+#   fairino10_v6_moveit2_config/config/servo_parameters.yaml
+###############################################
+
+# Main servo loop period. 0.01 = 100 Hz output to the controller.
+publish_period: 0.01
+max_expected_latency: 0.1
+
+# We will send real velocities in m/s and rad/s from servo_to_aruco.py.
+# Do not use "unitless" for this ArUco tracking bridge.
+command_in_type: "speed_units"
+
+# These limits are still useful for Cartesian / pose tracking commands.
+# Keep them conservative for first tests.
+scale:
+  linear: 0.05       # m/s
+  rotational: 0.15   # rad/s
+  joint: 0.2
+
+incoming_command_timeout: 0.2
+
+# MoveIt group and frames from the Fairino SRDF.
+move_group_name: fairino10_v6_group
+planning_frame: base_link
+ee_frame_name: wrist3_link
+robot_link_command_frame: base_link
+
+# Incoming Servo command topics. With node name "servo_node", these resolve to:
+#   /servo_node/delta_twist_cmds
+#   /servo_node/pose_target_cmds
+#   /servo_node/delta_joint_cmds
+cartesian_command_in_topic: ~/delta_twist_cmds
+pose_command_in_topic: ~/pose_target_cmds
+joint_command_in_topic: ~/delta_joint_cmds
+
+# Joint states from your ros2_control stack.
+joint_topic: /joint_states
+
+# Servo status topic. With node name "servo_node", this resolves to:
+#   /servo_node/status
+status_topic: ~/status
+
+# Fairino ros2_controllers.yaml defines fairino10_controller as a JointTrajectoryController.
+# Therefore Servo should publish JointTrajectory messages here.
+command_out_type: trajectory_msgs/JointTrajectory
+command_out_topic: /fairino10_controller/joint_trajectory
+
+# The Fairino controller in the public config uses position command_interfaces.
+# Publish positions; keep velocities/accelerations disabled at first.
+publish_joint_positions: true
+publish_joint_velocities: false
+publish_joint_accelerations: false
+
+# Smoothing. AccelerationLimitedPlugin is safer for a first real/sim robot test.
+use_smoothing: true
+smoothing_filter_plugin_name: "online_signal_smoothing::AccelerationLimitedPlugin"
+
+# Planning scene monitor.
+# Set false if move_group is already running and owns the primary planning scene.
+is_primary_planning_scene_monitor: false
+monitored_planning_scene_topic: /planning_scene
+check_octomap_collisions: false
+
+# Collision checking.
+# Conservative thresholds for early testing.
+check_collisions: true
+collision_check_rate: 20.0
+self_collision_proximity_threshold: 0.03
+scene_collision_proximity_threshold: 0.05
+
+# Singularity handling.
+lower_singularity_threshold: 10.0
+hard_stop_singularity_threshold: 30.0
+leaving_singularity_threshold_multiplier: 2.0
+singularity_step_scale: 0.01
+
+# Joint limit safety margin in radians.
+joint_limit_margins: [0.10]
+halt_all_joints_in_joint_mode: true
+halt_all_joints_in_cartesian_mode: true
+
+# 0.0 means Servo uses its internal velocity scaling near collision/singularity.
+override_velocity_scaling_factor: 0.0
+
+# Twist behavior. True is usually more intuitive for EE angular commands.
+apply_twist_commands_about_ee_frame: true
+
+# Pose tracking tolerances are unused if you command only TwistStamped,
+# but keeping them defined is useful if you later switch to PoseStamped.
+pose_tracking:
+  linear_tolerance: 0.001
+  angular_tolerance: 0.01
