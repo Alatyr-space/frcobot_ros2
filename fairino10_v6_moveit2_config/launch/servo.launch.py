@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Launch MoveIt Demo and then MoveIt Servo for Fairino FR10 with startup diagnostics.
+"""Launch MoveIt Servo for Fairino FR10 with startup diagnostics.
+Needs the MoveIt2 demo launch to be running first, e.g.:
+  ros2 launch fairino10_v6_moveit2_config demo.launch.py
 """
 
 import os
@@ -9,11 +11,9 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
-    IncludeLaunchDescription,
     OpaqueFunction,
     TimerAction,
 )
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
@@ -118,11 +118,6 @@ def launch_setup(context, *args, **kwargs):
 
 
 def generate_launch_description():
-    demo_launch = os.path.join(
-        get_package_share_directory(PACKAGE_NAME),
-        "launch",
-        "demo.launch.py",
-    )
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -143,7 +138,6 @@ def generate_launch_description():
                 default_value="info",
                 description="ROS log level for moveit_servo servo_node. Use debug while diagnosing.",
             ),
-            IncludeLaunchDescription(PythonLaunchDescriptionSource(demo_launch)),
             TimerAction(
                 period=LaunchConfiguration("servo_start_delay"),
                 actions=[OpaqueFunction(function=launch_setup)],
