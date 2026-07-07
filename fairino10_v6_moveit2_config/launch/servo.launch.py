@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Launch the Fairino FR10 MoveIt demo stack, then MoveIt Servo."""
+"""Launch MoveIt Demo and then MoveIt Servo for Fairino FR10 with startup diagnostics.
+"""
 
 import os
 import yaml
@@ -30,6 +31,48 @@ def load_yaml(package_name, relative_file_path):
         return yaml.safe_load(yaml_file)
 
 
+def yaml_get(data, key, default="NOT FOUND"):
+    return data.get(key, default) if isinstance(data, dict) else default
+
+
+def print_servo_diagnostics(servo_yaml, servo_log_level):
+    keys = [
+        "publish_period",
+        "incoming_command_timeout",
+        "command_in_type",
+        "scale",
+        "move_group_name",
+        "planning_frame",
+        "ee_frame_name",
+        "robot_link_command_frame",
+        "cartesian_command_in_topic",
+        "joint_topic",
+        "status_topic",
+        "command_out_type",
+        "command_out_topic",
+        "publish_joint_positions",
+        "publish_joint_velocities",
+        "publish_joint_accelerations",
+        "check_collisions",
+        "self_collision_proximity_threshold",
+        "scene_collision_proximity_threshold",
+        "lower_singularity_threshold",
+        "hard_stop_singularity_threshold",
+        "joint_limit_margins",
+        "apply_twist_commands_about_ee_frame",
+    ]
+
+    print("[servo.launch.py] ===== MoveIt Servo diagnostic summary =====")
+    print(f"[servo.launch.py] package={PACKAGE_NAME}, robot={ROBOT_NAME}, servo_log_level={servo_log_level}")
+    for key in keys:
+        print(f"[servo.launch.py] {key}: {yaml_get(servo_yaml, key)}")
+    print("[servo.launch.py] Expected command input topic with node name 'servo_node': /servo_node/delta_twist_cmds")
+    print("[servo.launch.py] Expected status topic with node name 'servo_node': /servo_node/status")
+    print("[servo.launch.py] Expected controller output topic: " + str(yaml_get(servo_yaml, "command_out_topic")))
+    print("[servo.launch.py] If Servo prints 'Waiting to receive robot state update', check joint_topic freshness and joint names.")
+    print("[servo.launch.py] =============================================")
+
+
 def launch_setup(context, *args, **kwargs):
     moveit_config = (
         MoveItConfigsBuilder(ROBOT_NAME, package_name=PACKAGE_NAME)
@@ -37,26 +80,29 @@ def launch_setup(context, *args, **kwargs):
     )
 
     servo_config_file = LaunchConfiguration("servo_config_file").perform(context)
+    servo_log_level = LaunchConfiguration("servo_log_level").perform(context)
     if servo_config_file:
         with open(servo_config_file, "r", encoding="utf-8") as yaml_file:
             servo_yaml = yaml.safe_load(yaml_file)
+        print(f"[servo.launch.py] Loaded Servo YAML from override: {servo_config_file}")
     else:
         servo_yaml = load_yaml(PACKAGE_NAME, "config/servo_parameters.yaml")
+        print("[servo.launch.py] Loaded Servo YAML from package config/servo_parameters.yaml")
+
+    print_servo_diagnostics(servo_yaml, servo_log_level)
 
     servo_params = {"moveit_servo": servo_yaml}
 
-    # Used by the default online_signal_smoothing::AccelerationLimitedPlugin.
-    # Keep this equal to publish_period in servo_parameters.yaml.
-    acceleration_filter_update_period = {"update_period": 0.01}
-
-    # Used by the acceleration limiting filter.
-    planning_group_name = {"planning_group_name": "fairino10_v6_group"}
+    publish_period = float(yaml_get(servo_yaml, "publish_period", 0.01))
+    acceleration_filter_update_period = {"update_period": publish_period}
+    planning_group_name = {"planning_group_name": yaml_get(servo_yaml, "move_group_name", "fairino10_v6_group")}
 
     servo_node = Node(
         package="moveit_servo",
         executable="servo_node",
         name="servo_node",
         output="screen",
+        arguments=["--ros-args", "--log-level", servo_log_level],
         parameters=[
             servo_params,
             acceleration_filter_update_period,
@@ -77,7 +123,6 @@ def generate_launch_description():
         "launch",
         "demo.launch.py",
     )
-
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -91,9 +136,12 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "servo_start_delay",
                 default_value="5.0",
-                description=(
-                    "Delay in seconds before starting Servo after demo.launch.py is included."
-                ),
+                description="Delay in seconds before starting Servo.",
+            ),
+            DeclareLaunchArgument(
+                "servo_log_level",
+                default_value="info",
+                description="ROS log level for moveit_servo servo_node. Use debug while diagnosing.",
             ),
             IncludeLaunchDescription(PythonLaunchDescriptionSource(demo_launch)),
             TimerAction(
