@@ -13,36 +13,44 @@
                 <state_interface name="position">
                   <param name="initial_value">${initial_positions['j1']}</param>
                 </state_interface>
+                <!-- F-204: the robot-measured speed. Without it every /joint_states
+                     velocity is NaN, which MoveIt Servo takes in (F-184). -->
+                <state_interface name="velocity"/>
             </joint>
             <joint name="j2">
                 <command_interface name="position"/>
                 <state_interface name="position">
                   <param name="initial_value">${initial_positions['j2']}</param>
                 </state_interface>
+                <state_interface name="velocity"/>
             </joint>
             <joint name="j3">
                 <command_interface name="position"/>
                 <state_interface name="position">
                   <param name="initial_value">${initial_positions['j3']}</param>
                 </state_interface>
+                <state_interface name="velocity"/>
             </joint>
             <joint name="j4">
                 <command_interface name="position"/>
                 <state_interface name="position">
                   <param name="initial_value">${initial_positions['j4']}</param>
                 </state_interface>
+                <state_interface name="velocity"/>
             </joint>
             <joint name="j5">
                 <command_interface name="position"/>
                 <state_interface name="position">
                   <param name="initial_value">${initial_positions['j5']}</param>
                 </state_interface>
+                <state_interface name="velocity"/>
             </joint>
             <joint name="j6">
                 <command_interface name="position"/>
                 <state_interface name="position">
                   <param name="initial_value">${initial_positions['j6']}</param>
                 </state_interface>
+                <state_interface name="velocity"/>
             </joint>
 
         </ros2_control>

@@ -59,7 +59,12 @@ private:
   double _jnt_position_state[6];
   double _jnt_velocity_state[6];
   double _jnt_torque_state[6];
-  int _control_mode;
+  // Position control until on_activate says otherwise; uninitialised, write()
+  // read an indeterminate mode before activation.
+  int _control_mode = 0;
+  // F-204: whether the description declares a velocity state interface.
+  // Exported, and read from the robot's feedback, only then.
+  bool _export_velocity = false;
   std::string _controller_ip = CONTROLLER_IP_ADDRESS;
   std::unique_ptr<FRRobot> _ptr_robot;
 };
