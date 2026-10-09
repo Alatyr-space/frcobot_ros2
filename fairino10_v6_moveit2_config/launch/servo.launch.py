@@ -100,7 +100,12 @@ def launch_setup(context, *args, **kwargs):
     servo_node = Node(
         package="moveit_servo",
         executable="servo_node",
-        name="servo_node",
+        # No `name=`: launch_ros turns it into a process-wide
+        # `-r __node:=servo_node`, which renames every node the process
+        # creates, and MoveIt Servo creates two, so the graph held two
+        # `/servo_node` (Alatyr F-274). Servo names its main node
+        # `servo_node` itself, so `/servo_node/pause_servo` and the other
+        # services keep their names.
         output="screen",
         arguments=["--ros-args", "--log-level", servo_log_level],
         parameters=[
