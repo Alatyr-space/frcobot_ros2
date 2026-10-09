@@ -42,7 +42,10 @@
   <exec_depend>rviz_common</exec_depend>
   <exec_depend>rviz_default_plugins</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
-  <exec_depend>warehouse_ros_mongo</exec_depend>
+  <!-- warehouse_ros_mongo dropped (Alatyr F-374): the Jazzy rosdistro does
+       not carry it, so rosdep cannot install this package on a clean
+       machine. Only the `db:=true` warehouse launch needs it; install it
+       by hand to use that. -->
   <exec_depend>xacro</exec_depend>
 
 
