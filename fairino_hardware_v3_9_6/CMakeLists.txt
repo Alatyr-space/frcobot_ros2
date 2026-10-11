@@ -136,9 +136,13 @@ if(BUILD_TESTING)
   # F-204, F-184: the velocity export and write()'s guard on every joint.
   # Run alone with: colcon test --packages-select fairino_hardware_v3_9_6
   #   --ctest-args -R test_fairino_hardware_interface
-  ament_add_gmock(test_fairino_hardware_interface test/test_fairino_hardware_interface.cpp)
+  # FAIRINO_HARDWARE_TEST_NO_ROBOT: the real SDK refuses to be built, so no
+  # test can reach the controller.
+  ament_add_gmock(test_fairino_hardware_interface test/test_fairino_hardware_interface.cpp
+    ENV FAIRINO_HARDWARE_TEST_NO_ROBOT=1)
   target_link_libraries(test_fairino_hardware_interface fairino_hardware)
-  ament_target_dependencies(test_fairino_hardware_interface hardware_interface rclcpp)
+  ament_target_dependencies(test_fairino_hardware_interface
+    hardware_interface pluginlib rclcpp rclcpp_lifecycle)
 endif()
 
 #export

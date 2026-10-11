@@ -1,8 +1,19 @@
 #include "fairino_hardware/fairino_hardware_interface.hpp"
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace fairino_hardware{
+
+FairinoHardwareInterface::FairinoHardwareInterface()
+: _sdk_factory(makeRobotSdk)
+{
+}
+
+FairinoHardwareInterface::FairinoHardwareInterface(RobotSdkFactory sdk_factory)
+: _sdk_factory(std::move(sdk_factory))
+{
+}
 
 hardware_interface::CallbackReturn FairinoHardwareInterface::on_init(const hardware_interface::HardwareInfo& sysinfo){
     if (hardware_interface::SystemInterface::on_init(sysinfo) != hardware_interface::CallbackReturn::SUCCESS) {
@@ -127,7 +138,12 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_activate(const r
     using namespace std::chrono_literals;
     RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "Starting ...please wait...");
     //做变量的初始化工作
-    _ptr_robot = std::make_unique<FRRobot>();//创建机器人实例
+    try {
+        _ptr_robot = _sdk_factory();//创建机器人实例
+    } catch (const std::exception & error) {
+        RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"), "No robot SDK: %s", error.what());
+        return hardware_interface::CallbackReturn::ERROR;
+    }
     for(int i=0;i<6;i++){//初始化变量
         _jnt_position_command[i] = 0;
         _jnt_velocity_command[i] = 0;

@@ -10,6 +10,7 @@
 #include "visibility_control.h"
 #include <vector>
 #include "libfairino/include/robot.h"
+#include "fairino_hardware/robot_sdk.hpp"
 
 
 #define CONTROLLER_IP_ADDRESS "192.168.58.2"
@@ -20,6 +21,15 @@ namespace fairino_hardware
 class FairinoHardwareInterface: public hardware_interface::SystemInterface{
 public:
   RCLCPP_SHARED_PTR_DEFINITIONS(FairinoHardwareInterface)
+
+  // pluginlib's: the real SDK, through makeRobotSdk().
+  FAIRINO_HARDWARE_PUBLIC
+  FairinoHardwareInterface();
+
+  // A test's: the SDK the factory yields, built in on_activate as the real
+  // one would be.
+  FAIRINO_HARDWARE_PUBLIC
+  explicit FairinoHardwareInterface(RobotSdkFactory sdk_factory);
 
   FAIRINO_HARDWARE_PUBLIC
   hardware_interface::CallbackReturn on_init(const hardware_interface::HardwareInfo& info) override;
@@ -66,7 +76,8 @@ private:
   // Exported, and read from the robot's feedback, only then.
   bool _export_velocity = false;
   std::string _controller_ip = CONTROLLER_IP_ADDRESS;
-  std::unique_ptr<FRRobot> _ptr_robot;
+  RobotSdkFactory _sdk_factory;
+  std::unique_ptr<RobotSdk> _ptr_robot;
 };
 
 } //end namespace
