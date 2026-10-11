@@ -5,7 +5,7 @@
 
         <ros2_control name="${name}" type="system">
             <hardware>
-                <!-- By default, set up controllers for simulation. This won't work on real hardware -->
+                <!-- The real arm's hardware interface, not a simulation. The component is named in the robot xacro; it was `FakeSystem` upstream (Alatyr F-159). -->
                 <plugin>fairino_hardware/FairinoHardwareInterface</plugin>
             </hardware>
             <joint name="j1">
