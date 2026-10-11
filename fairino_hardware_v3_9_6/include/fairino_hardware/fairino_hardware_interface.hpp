@@ -78,6 +78,18 @@ private:
   std::string _controller_ip = CONTROLLER_IP_ADDRESS;
   RobotSdkFactory _sdk_factory;
   std::unique_ptr<RobotSdk> _ptr_robot;
+
+  // F-323: a -2 (ERR_SOCKET_COM_FAILED) on a read is held through, the last
+  // good state kept, for up to this long (read()'s own `time`) from the first
+  // failed cycle; past it, read() fails as it always did. One good cycle ends
+  // the episode. Any other code fails at once.
+  int64_t _transient_read_error_tolerance_ns = 100 * 1000000;
+  bool _read_failing = false;
+  rclcpp::Time _read_failing_since;
+  int _read_failures = 0;
+  // Whether this cycle's read may go on; false past the bound or on a code
+  // that is not transient. `what` names the read, for the log.
+  bool acceptReadCode(errno_t code, const char * what, const rclcpp::Time & time);
 };
 
 } //end namespace

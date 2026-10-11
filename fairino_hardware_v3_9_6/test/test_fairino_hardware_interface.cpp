@@ -258,3 +258,159 @@ TEST(FairinoHardwareInterface, ThePluginStillLoadsByName)
   auto driver = loader.createUniqueInstance("fairino_hardware/FairinoHardwareInterface");
   ASSERT_NE(driver, nullptr);
 }
+
+// The driver activated on a fake SDK, and its exported interfaces, kept so a
+// test can read what the controllers would.
+struct ActiveDriver
+{
+  explicit ActiveDriver(bool velocity = true)
+  : script(std::make_shared<SdkScript>()),
+    driver(fakeSdk(script))
+  {
+    EXPECT_EQ(
+      driver.on_init(robotWith(std::vector<std::vector<std::string>>(
+        6, velocity ? POSITION_AND_VELOCITY : POSITION_ONLY))),
+      CallbackReturn::SUCCESS);
+    states = driver.export_state_interfaces();
+    commands = driver.export_command_interfaces();
+    EXPECT_EQ(driver.on_activate(INACTIVE), CallbackReturn::SUCCESS);
+  }
+
+  double state(const std::string & name)
+  {
+    for (auto & state : states) {
+      if (state.get_name() == name) {
+        return state.get_optional().value();
+      }
+    }
+    throw std::out_of_range(name);
+  }
+
+  // read() at `ms` milliseconds of the controller manager's clock.
+  hardware_interface::return_type readAt(int64_t ms)
+  {
+    return driver.read(rclcpp::Time(ms * 1000000), rclcpp::Duration(0, 10000000));
+  }
+
+  std::shared_ptr<SdkScript> script;
+  fairino_hardware::FairinoHardwareInterface driver;
+  std::vector<hardware_interface::StateInterface> states;
+  std::vector<hardware_interface::CommandInterface> commands;
+};
+
+constexpr double DEG = M_PI / 180.0;
+
+// F-323: one -2 (ERR_SOCKET_COM_FAILED) on the position read deactivated
+// the arm at rest. It is held through, up to the bound, the last good state
+// kept.
+TEST(FairinoHardwareInterface, ReadHoldsThroughOneTransientSocketError)
+{
+  ActiveDriver arm;
+  ASSERT_EQ(arm.readAt(0), hardware_interface::return_type::OK);
+  EXPECT_NEAR(arm.state("j1/position"), 10.0 * DEG, 1e-12);
+
+  arm.script->position_codes = {-2};
+  arm.script->joint_degrees[0] = 11.0;
+  EXPECT_EQ(arm.readAt(10), hardware_interface::return_type::OK);
+  EXPECT_NEAR(arm.state("j1/position"), 10.0 * DEG, 1e-12) << "the last good value, held";
+
+  EXPECT_EQ(arm.readAt(20), hardware_interface::return_type::OK);
+  EXPECT_NEAR(arm.state("j1/position"), 11.0 * DEG, 1e-12) << "the next good read lands";
+}
+
+TEST(FairinoHardwareInterface, ReadFailsWhenTheErrorOutlastsItsBound)
+{
+  ActiveDriver arm;
+  ASSERT_EQ(arm.readAt(0), hardware_interface::return_type::OK);
+  arm.script->position_codes = std::deque<int>(20, -2);
+  // 100 ms is the default bound: failures from 10 ms to 110 ms are held,
+  // the one at 120 ms (110 ms after the first) is past it.
+  for (int64_t ms = 10; ms <= 110; ms += 10) {
+    EXPECT_EQ(arm.readAt(ms), hardware_interface::return_type::OK) << "at " << ms << " ms";
+  }
+  EXPECT_EQ(arm.readAt(120), hardware_interface::return_type::ERROR);
+}
+
+TEST(FairinoHardwareInterface, ReadFailsAtOnceOnAnotherCode)
+{
+  ActiveDriver arm;
+  ASSERT_EQ(arm.readAt(0), hardware_interface::return_type::OK);
+  arm.script->position_codes = {-4};
+  EXPECT_EQ(arm.readAt(10), hardware_interface::return_type::ERROR);
+}
+
+TEST(FairinoHardwareInterface, ReadHoldsThroughOneTransientSocketErrorOnTheSpeeds)
+{
+  ActiveDriver arm;
+  arm.script->speed_degrees[2] = 5.0;
+  ASSERT_EQ(arm.readAt(0), hardware_interface::return_type::OK);
+  EXPECT_NEAR(arm.state("j3/velocity"), 5.0 * DEG, 1e-6);
+
+  arm.script->speed_codes = {-2};
+  arm.script->speed_degrees[2] = 6.0;
+  EXPECT_EQ(arm.readAt(10), hardware_interface::return_type::OK);
+  EXPECT_NEAR(arm.state("j3/velocity"), 5.0 * DEG, 1e-6) << "the last good value, held";
+
+  EXPECT_EQ(arm.readAt(20), hardware_interface::return_type::OK);
+  EXPECT_NEAR(arm.state("j3/velocity"), 6.0 * DEG, 1e-6);
+}
+
+TEST(FairinoHardwareInterface, ReadFailsWhenTheSpeedErrorOutlastsItsBound)
+{
+  ActiveDriver arm;
+  ASSERT_EQ(arm.readAt(0), hardware_interface::return_type::OK);
+  arm.script->speed_codes = std::deque<int>(20, -2);
+  for (int64_t ms = 10; ms <= 110; ms += 10) {
+    EXPECT_EQ(arm.readAt(ms), hardware_interface::return_type::OK) << "at " << ms << " ms";
+  }
+  EXPECT_EQ(arm.readAt(120), hardware_interface::return_type::ERROR);
+}
+
+TEST(FairinoHardwareInterface, ReadFailsAtOnceOnAnotherSpeedCode)
+{
+  ActiveDriver arm;
+  ASSERT_EQ(arm.readAt(0), hardware_interface::return_type::OK);
+  arm.script->speed_codes = {-4};
+  EXPECT_EQ(arm.readAt(10), hardware_interface::return_type::ERROR);
+}
+
+// A good cycle ends the episode: a second -2 later starts its own bound.
+TEST(FairinoHardwareInterface, OneGoodReadResetsTheBound)
+{
+  ActiveDriver arm;
+  ASSERT_EQ(arm.readAt(0), hardware_interface::return_type::OK);
+  arm.script->position_codes = std::deque<int>(10, -2);  // 10 to 100 ms
+  for (int64_t ms = 10; ms <= 100; ms += 10) {
+    ASSERT_EQ(arm.readAt(ms), hardware_interface::return_type::OK);
+  }
+  ASSERT_EQ(arm.readAt(110), hardware_interface::return_type::OK);  // good
+  arm.script->position_codes = std::deque<int>(10, -2);  // 120 to 210 ms
+  for (int64_t ms = 120; ms <= 210; ms += 10) {
+    EXPECT_EQ(arm.readAt(ms), hardware_interface::return_type::OK) << "at " << ms << " ms";
+  }
+}
+
+// The bound is the description's <param>.
+TEST(FairinoHardwareInterface, TheBoundIsAHardwareParameter)
+{
+  auto script = std::make_shared<SdkScript>();
+  fairino_hardware::FairinoHardwareInterface driver(fakeSdk(script));
+  auto info = robotWith(std::vector<std::vector<std::string>>(6, POSITION_ONLY));
+  info.hardware_parameters["transient_read_error_tolerance_ms"] = "30";
+  ASSERT_EQ(driver.on_init(info), CallbackReturn::SUCCESS);
+  ASSERT_EQ(driver.on_activate(INACTIVE), CallbackReturn::SUCCESS);
+  ASSERT_EQ(driver.read(rclcpp::Time(0), rclcpp::Duration(0, 10000000)),
+    hardware_interface::return_type::OK);
+  script->position_codes = std::deque<int>(10, -2);
+  for (int64_t ms = 10; ms <= 40; ms += 10) {
+    EXPECT_EQ(driver.read(rclcpp::Time(ms * 1000000), rclcpp::Duration(0, 10000000)),
+      hardware_interface::return_type::OK) << "at " << ms << " ms";
+  }
+  EXPECT_EQ(driver.read(rclcpp::Time(50 * 1000000), rclcpp::Duration(0, 10000000)),
+    hardware_interface::return_type::ERROR);
+
+  auto bad = robotWith(std::vector<std::vector<std::string>>(6, POSITION_ONLY));
+  bad.hardware_parameters["transient_read_error_tolerance_ms"] = "-5";
+  fairino_hardware::FairinoHardwareInterface refused(fakeSdk(script));
+  EXPECT_EQ(refused.on_init(bad), CallbackReturn::ERROR);
+}

@@ -7,6 +7,10 @@
             <hardware>
                 <!-- By default, set up controllers for simulation. This won't work on real hardware -->
                 <plugin>fairino_hardware/FairinoHardwareInterface</plugin>
+                <!-- F-323: how long a -2 (ERR_SOCKET_COM_FAILED) on a state
+                     read is held through, the last good state kept, before
+                     the read fails and the arm is deactivated -->
+                <param name="transient_read_error_tolerance_ms">100</param>
             </hardware>
             <joint name="j1">
                 <command_interface name="position"/>

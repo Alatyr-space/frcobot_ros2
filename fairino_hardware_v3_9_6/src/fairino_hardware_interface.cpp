@@ -1,4 +1,5 @@
 #include "fairino_hardware/fairino_hardware_interface.hpp"
+#include "libfairino/include/robot_error.h"
 #include <algorithm>
 #include <cmath>
 #include <utility>
@@ -90,6 +91,27 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_init(const hardw
         return hardware_interface::CallbackReturn::ERROR;
     }
     _export_velocity = with_velocity != 0;
+
+    const auto tolerance = info_.hardware_parameters.find("transient_read_error_tolerance_ms");
+    if (tolerance != info_.hardware_parameters.end()) {
+        int64_t ms = -1;
+        try {
+            size_t used = 0;
+            ms = std::stoll(tolerance->second, &used);
+            if (used != tolerance->second.size()) {
+                ms = -1;
+            }
+        } catch (const std::exception &) {
+            ms = -1;
+        }
+        if (ms < 0) {
+            RCLCPP_FATAL(rclcpp::get_logger("FairinoHardwareInterface"),
+                        "transient_read_error_tolerance_ms: '%s' is not a count of milliseconds",
+                        tolerance->second.c_str());
+            return hardware_interface::CallbackReturn::ERROR;
+        }
+        _transient_read_error_tolerance_ns = ms * 1000000;
+    }
     return hardware_interface::CallbackReturn::SUCCESS;
 }//end on_init
 
@@ -152,6 +174,7 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_activate(const r
         _jnt_velocity_state[i] = 0;
         _jnt_torque_state[i] = 0;
     }
+    _read_failing = false;
     _control_mode = 0;//默认是位置控制,0-位置控制，1-扭矩控制 2-速度控制
     errno_t returncode = _ptr_robot->RPC(_controller_ip.c_str());//建立xmlrpc连接
     rclcpp::sleep_for(200ms);//等待一段时间让控制器的rpc连接建立完毕
@@ -196,8 +219,36 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_deactivate(const
 
 
 
+bool FairinoHardwareInterface::acceptReadCode(errno_t code, const char * what, const rclcpp::Time & time)
+{
+    if (code != ERR_SOCKET_COM_FAILED) {
+        // F-204: a failed read used to go on as OK and republish the old
+        // positions; it fails the cycle.
+        RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"), "%s failed: %d", what, code);
+        return false;
+    }
+    if (!_read_failing) {
+        _read_failing = true;
+        _read_failing_since = time;
+        _read_failures = 0;
+        RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"),
+                    "%s failed: %d, the last good state held (up to %ld ms)", what, code,
+                    static_cast<long>(_transient_read_error_tolerance_ns / 1000000));
+    }
+    const int64_t failing_ns = (time - _read_failing_since).nanoseconds();
+    if (failing_ns > _transient_read_error_tolerance_ns) {
+        RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"),
+                     "%s failed: %d, for %ld ms (past the %ld ms bound)", what, code,
+                     static_cast<long>(failing_ns / 1000000),
+                     static_cast<long>(_transient_read_error_tolerance_ns / 1000000));
+        return false;
+    }
+    return true;
+}
+
 hardware_interface::return_type FairinoHardwareInterface::read(const rclcpp::Time& time,const rclcpp::Duration& period)
 {//从RTDE反馈数据中获取所需的位置，速度和扭矩信息
+    bool transient = false;
     JointPos state_data;
     error_t returncode = _ptr_robot->GetActualJointPosDegree(1,&state_data);
     if(returncode == 0){
@@ -205,10 +256,9 @@ hardware_interface::return_type FairinoHardwareInterface::read(const rclcpp::Tim
             _jnt_position_state[i] = state_data.jPos[i]/180.0*M_PI;//注意单位转换，moveit统一用弧度
             //_jnt_torque_state[i] = state_data.jt_cur_tor[i];//注意单位转换
         }
+    }else if (acceptReadCode(returncode, "GetActualJointPosDegree", time)) {
+        transient = true;  // F-323: the last good positions, held
     }else{
-        // F-204: this line used to be a bare expression, not a return, so a
-        // failed read went on as OK and republished the old positions.
-        RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"), "GetActualJointPosDegree failed: %d", returncode);
         return hardware_interface::return_type::ERROR;
     }
     if (_export_velocity) {
@@ -217,17 +267,27 @@ hardware_interface::return_type FairinoHardwareInterface::read(const rclcpp::Tim
         // difference of positions.
         float speed[6];
         returncode = _ptr_robot->GetActualJointSpeedsDegree(1, speed);
-        if (returncode != 0) {
-            RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"), "GetActualJointSpeedsDegree failed: %d", returncode);
+        if (returncode == 0) {
+            for (int i = 0; i < 6; i++) {
+                if (!std::isfinite(speed[i])) {
+                    RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"), "joint %d speed is not finite", i + 1);
+                    return hardware_interface::return_type::ERROR;
+                }
+                _jnt_velocity_state[i] = speed[i] / 180.0 * M_PI;
+            }
+        } else if (acceptReadCode(returncode, "GetActualJointSpeedsDegree", time)) {
+            transient = true;  // F-323: the last good speeds, held
+        } else {
             return hardware_interface::return_type::ERROR;
         }
-        for (int i = 0; i < 6; i++) {
-            if (!std::isfinite(speed[i])) {
-                RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"), "joint %d speed is not finite", i + 1);
-                return hardware_interface::return_type::ERROR;
-            }
-            _jnt_velocity_state[i] = speed[i] / 180.0 * M_PI;
-        }
+    }
+    if (transient) {
+        ++_read_failures;
+    } else if (_read_failing) {
+        RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"),
+                    "read recovered after %d failures over %ld ms", _read_failures,
+                    static_cast<long>((time - _read_failing_since).nanoseconds() / 1000000));
+        _read_failing = false;
     }
     //RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "System successfully read: %f,%f,%f,%f,%f,%f",_jnt_position_state[0],\
     _jnt_position_state[1],_jnt_position_state[2],_jnt_position_state[3],_jnt_position_state[4],_jnt_position_state[5]);
