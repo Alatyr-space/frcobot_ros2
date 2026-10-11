@@ -11,6 +11,11 @@
 #include <vector>
 #include "libfairino/include/robot.h"
 #include "fairino_hardware/robot_sdk.hpp"
+#include "diagnostic_msgs/msg/diagnostic_array.hpp"
+#include "diagnostic_msgs/msg/diagnostic_status.hpp"
+#include "fairino_hardware/refusal_episode.hpp"
+#include "realtime_tools/realtime_publisher.hpp"
+#include <functional>
 
 
 #define CONTROLLER_IP_ADDRESS "192.168.58.2"
@@ -30,6 +35,14 @@ public:
   // one would be.
   FAIRINO_HARDWARE_PUBLIC
   explicit FairinoHardwareInterface(RobotSdkFactory sdk_factory);
+
+  // Where the driver's diagnostic goes; true once it is on its way. A test's
+  // sink sees each status; the default publishes on /diagnostics from the
+  // component's node.
+  using DiagnosticSink = std::function<bool (const diagnostic_msgs::msg::DiagnosticStatus &)>;
+
+  FAIRINO_HARDWARE_PUBLIC
+  FairinoHardwareInterface(RobotSdkFactory sdk_factory, DiagnosticSink diagnostic_sink);
 
   FAIRINO_HARDWARE_PUBLIC
   hardware_interface::CallbackReturn on_init(const hardware_interface::HardwareInfo& info) override;
@@ -78,6 +91,17 @@ private:
   std::string _controller_ip = CONTROLLER_IP_ADDRESS;
   RobotSdkFactory _sdk_factory;
   std::unique_ptr<RobotSdk> _ptr_robot;
+  DiagnosticSink _diagnostic_sink;
+
+  // F-226: ServoJ's refusals, as episodes. One ERROR line at the onset (and
+  // at a change of code), one WARN at the end, and the diagnostic contract
+  // on every change and once a second; write() goes on returning OK, as the
+  // controller's refusal is not the driver's to act on.
+  RefusalEpisode _refusal;
+  std::shared_ptr<realtime_tools::RealtimePublisher<diagnostic_msgs::msg::DiagnosticArray>>
+    _diagnostic_publisher;
+  void noteServoJ(int code, const rclcpp::Time & time);
+  diagnostic_msgs::msg::DiagnosticStatus servoJStatus() const;
 
   // F-323: a -2 (ERR_SOCKET_COM_FAILED) on a read is held through, the last
   // good state kept, for up to this long (read()'s own `time`) from the first

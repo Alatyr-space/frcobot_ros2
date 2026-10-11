@@ -9,7 +9,10 @@
 
 #include <gmock/gmock.h>
 
+#include <chrono>
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
 #include <deque>
 #include <limits>
 #include <memory>
@@ -20,7 +23,11 @@
 #include "fairino_hardware/fairino_hardware_interface.hpp"
 #include "fairino_hardware/robot_sdk.hpp"
 #include "hardware_interface/system_interface.hpp"
+#include "diagnostic_msgs/msg/diagnostic_array.hpp"
+#include "hardware_interface/types/hardware_component_params.hpp"
 #include "pluginlib/class_loader.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "rcutils/logging.h"
 #include "rclcpp_lifecycle/state.hpp"
 
 namespace
@@ -413,4 +420,232 @@ TEST(FairinoHardwareInterface, TheBoundIsAHardwareParameter)
   bad.hardware_parameters["transient_read_error_tolerance_ms"] = "-5";
   fairino_hardware::FairinoHardwareInterface refused(fakeSdk(script));
   EXPECT_EQ(refused.on_init(bad), CallbackReturn::ERROR);
+}
+
+// --- F-226: a refused ServoJ (C3) ---------------------------------------
+
+// Every log line the driver writes while it lives, with its severity.
+class LogCapture
+{
+public:
+  LogCapture()
+  : previous_(rcutils_logging_get_output_handler())
+  {
+    lines().clear();
+    rcutils_logging_set_output_handler(&LogCapture::handle);
+  }
+  ~LogCapture() {rcutils_logging_set_output_handler(previous_);}
+
+  // The lines of a severity that hold every one of the fragments.
+  int count(int severity, const std::vector<std::string> & fragments) const
+  {
+    int n = 0;
+    for (const auto & [level, text] : lines()) {
+      bool all = level == severity;
+      for (const auto & fragment : fragments) {
+        all = all && text.find(fragment) != std::string::npos;
+      }
+      n += all ? 1 : 0;
+    }
+    return n;
+  }
+  int count(int severity) const {return count(severity, {});}
+
+private:
+  static std::vector<std::pair<int, std::string>> & lines()
+  {
+    static std::vector<std::pair<int, std::string>> captured;
+    return captured;
+  }
+  static void handle(
+    const rcutils_log_location_t *, int severity, const char *,
+    rcutils_time_point_value_t, const char * format, va_list * args)
+  {
+    char text[1024];
+    va_list copy;
+    va_copy(copy, *args);
+    std::vsnprintf(text, sizeof(text), format, copy);
+    va_end(copy);
+    lines().emplace_back(severity, text);
+  }
+
+  rcutils_logging_output_handler_t previous_;
+};
+
+// The driver activated on a fake SDK, with a diagnostic sink of the test's.
+struct ServoingDriver
+{
+  ServoingDriver()
+  : script(std::make_shared<SdkScript>()),
+    driver(fakeSdk(script), [this](const diagnostic_msgs::msg::DiagnosticStatus & status) {
+        published.push_back(status);
+        return true;
+      })
+  {
+    EXPECT_EQ(
+      driver.on_init(robotWith(std::vector<std::vector<std::string>>(6, POSITION_AND_VELOCITY))),
+      CallbackReturn::SUCCESS);
+    states = driver.export_state_interfaces();
+    commands = driver.export_command_interfaces();
+    EXPECT_EQ(driver.on_activate(INACTIVE), CallbackReturn::SUCCESS);
+  }
+
+  // One control cycle at `ms`: read, then write.
+  hardware_interface::return_type cycleAt(int64_t ms)
+  {
+    const rclcpp::Time time(ms * 1000000);
+    EXPECT_EQ(driver.read(time, rclcpp::Duration(0, 10000000)), hardware_interface::return_type::OK);
+    return driver.write(time, rclcpp::Duration(0, 10000000));
+  }
+
+  void command(int joint, double radians) {(void)commands[joint].set_value(radians);}
+
+  std::shared_ptr<SdkScript> script;
+  std::vector<diagnostic_msgs::msg::DiagnosticStatus> published;
+  fairino_hardware::FairinoHardwareInterface driver;
+  std::vector<hardware_interface::StateInterface> states;
+  std::vector<hardware_interface::CommandInterface> commands;
+};
+
+std::string valueOf(const diagnostic_msgs::msg::DiagnosticStatus & status, const std::string & key)
+{
+  for (const auto & value : status.values) {
+    if (value.key == key) {
+      return value.value;
+    }
+  }
+  return "<absent>";
+}
+
+// F-226: the controller refused ServoJ (code 14) every 10 ms, and the driver
+// said so at INFO, 100 lines a second, while write() returned OK: the
+// refusal was buried. One ERROR per episode (with the vendor's own text, so
+// a grep for 错误码 still finds the onset), one WARN at its end.
+TEST(FairinoHardwareInterface, ARefusalNeitherDeactivatesNorFloodsTheLog)
+{
+  ServoingDriver arm;
+  LogCapture log;
+  arm.script->servo_codes = std::deque<int>(100, 14);
+  for (int64_t cycle = 0; cycle < 105; ++cycle) {
+    EXPECT_EQ(arm.cycleAt(cycle * 10), hardware_interface::return_type::OK) << "cycle " << cycle;
+  }
+  EXPECT_EQ(
+    log.count(RCUTILS_LOG_SEVERITY_ERROR, {"ServoJ refused, code 14", "错误码:14"}), 1);
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_ERROR), 1);
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_WARN, {"accepted again after 100 refusals"}), 1);
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_INFO), 0) << "no line per cycle";
+}
+
+// A change of code within an episode is one more ERROR line, not a new episode.
+TEST(FairinoHardwareInterface, AChangeOfCodeIsOneMoreErrorLine)
+{
+  ServoingDriver arm;
+  LogCapture log;
+  arm.script->servo_codes = {14, 14, 14, 7, 7, 7};
+  for (int64_t cycle = 0; cycle < 8; ++cycle) {
+    EXPECT_EQ(arm.cycleAt(cycle * 10), hardware_interface::return_type::OK);
+  }
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_ERROR, {"ServoJ refused, code 14", "错误码:14"}), 1);
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_ERROR, {"ServoJ refused, code 7", "错误码:7"}), 1);
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_WARN, {"accepted again after 6 refusals", "code 7"}), 1);
+}
+
+// The contract the motion capability reads (C5): an ERROR status at the
+// onset, repeated no more than once a second of `time`, an OK status at
+// acceptance, and the OK repeated once a second too, for a late subscriber.
+TEST(FairinoHardwareInterface, ARefusalIsPublishedAsADiagnostic)
+{
+  ServoingDriver arm;
+  arm.script->servo_codes = std::deque<int>(250, 14);  // 1010 to 3500 ms
+  arm.script->servo_codes.push_front(0);  // 1000 ms
+  for (int64_t cycle = 0; cycle < 260; ++cycle) {
+    arm.cycleAt(1000 + cycle * 10);
+  }
+  ASSERT_FALSE(arm.published.empty());
+  std::vector<diagnostic_msgs::msg::DiagnosticStatus> errors;
+  for (const auto & status : arm.published) {
+    EXPECT_EQ(status.name, "fairino_hardware: ServoJ");
+    EXPECT_EQ(status.hardware_id, "fairino10_v6");
+    if (status.level == diagnostic_msgs::msg::DiagnosticStatus::ERROR) {
+      errors.push_back(status);
+    }
+  }
+  ASSERT_EQ(errors.size(), 3u) << "the onset, then 1 s and 2 s after it";
+  EXPECT_EQ(errors[0].message, "ServoJ refused, code 14");
+  EXPECT_EQ(valueOf(errors[0], "code"), "14");
+  EXPECT_EQ(valueOf(errors[0], "refusals"), "1");
+  EXPECT_EQ(valueOf(errors[0], "since_s"), "1.010");
+  EXPECT_EQ(valueOf(errors[1], "refusals"), "101");
+  EXPECT_EQ(valueOf(errors[2], "refusals"), "201");
+  const auto & last = arm.published.back();
+  EXPECT_EQ(last.level, diagnostic_msgs::msg::DiagnosticStatus::OK);
+  EXPECT_EQ(last.message, "ServoJ accepted");
+  // Before the episode, the OK was out at the first cycle.
+  EXPECT_EQ(arm.published.front().level, diagnostic_msgs::msg::DiagnosticStatus::OK);
+  EXPECT_EQ(arm.published.size(), 5u) << "OK, the onset, two repeats, OK";
+}
+
+TEST(FairinoHardwareInterface, TheDriverNeverClearsAFault)
+{
+  ServoingDriver arm;
+  arm.script->servo_codes = std::deque<int>(50, 14);
+  for (int64_t cycle = 0; cycle < 60; ++cycle) {
+    arm.cycleAt(cycle * 10);
+  }
+  for (size_t i = 2; i < arm.script->calls.size(); ++i) {
+    const auto & call = arm.script->calls[i];
+    EXPECT_TRUE(
+      call == "ServoJ" || call == "GetActualJointPosDegree 1" ||
+      call == "GetActualJointSpeedsDegree 1") << call;
+  }
+}
+
+// The contract pinned on the topic, not only the sink: the component's own
+// node publishes it on /diagnostics (domain 77, localhost, from CMake).
+TEST(FairinoHardwareInterface, TheDiagnosticReachesTheTopic)
+{
+  rclcpp::init(0, nullptr);
+  {
+    auto executor = std::make_shared<rclcpp::executors::SingleThreadedExecutor>();
+    auto script = std::make_shared<SdkScript>();
+    fairino_hardware::FairinoHardwareInterface driver(fakeSdk(script));
+    hardware_interface::HardwareComponentParams params;
+    params.hardware_info = robotWith(std::vector<std::vector<std::string>>(6, POSITION_ONLY));
+    params.hardware_info.name = "fairino10_v6_hardware";
+    params.clock = std::make_shared<rclcpp::Clock>();
+    params.executor = executor;
+    ASSERT_EQ(driver.init(params), CallbackReturn::SUCCESS);
+    ASSERT_NE(driver.get_node(), nullptr);
+    auto states = driver.export_state_interfaces();
+    auto commands = driver.export_command_interfaces();
+    ASSERT_EQ(driver.on_activate(INACTIVE), CallbackReturn::SUCCESS);
+
+    auto listener = std::make_shared<rclcpp::Node>("diagnostic_listener");
+    std::vector<diagnostic_msgs::msg::DiagnosticStatus> heard;
+    auto subscription = listener->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
+      "/diagnostics", 10, [&heard](const diagnostic_msgs::msg::DiagnosticArray & array) {
+        for (const auto & status : array.status) {
+          heard.push_back(status);
+        }
+      });
+    rclcpp::executors::SingleThreadedExecutor listening;
+    listening.add_node(listener);
+
+    script->servo_codes = std::deque<int>(1000, 14);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    bool refused = false;
+    for (int64_t cycle = 0; !refused && std::chrono::steady_clock::now() < deadline; ++cycle) {
+      const rclcpp::Time time(cycle * 10000000);
+      driver.read(time, rclcpp::Duration(0, 10000000));
+      driver.write(time, rclcpp::Duration(0, 10000000));
+      listening.spin_some(std::chrono::milliseconds(10));
+      for (const auto & status : heard) {
+        refused = refused || (
+          status.name == "fairino_hardware: ServoJ" &&
+          status.level == diagnostic_msgs::msg::DiagnosticStatus::ERROR);
+      }
+    }
+    EXPECT_TRUE(refused) << heard.size() << " statuses heard in 2 s, none the refusal";
+  }
+  rclcpp::shutdown();
 }
