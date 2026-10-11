@@ -297,7 +297,9 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_deactivate(const
     RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "Stopping ...please wait...");
     _ptr_robot->StopMotion();//停止机器人
     _ptr_robot->CloseRPC();//销毁实例，连接断开
-    _ptr_robot.release();
+    // F-417: reset(), not release(): release() dropped the SDK object
+    // without deleting it, one leaked per deactivation.
+    _ptr_robot.reset();
     RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "System successfully stopped!");
     return hardware_interface::CallbackReturn::SUCCESS;
 }

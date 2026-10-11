@@ -81,13 +81,17 @@ struct SdkScript
   std::deque<int> speed_codes;
   std::deque<int> servo_codes;
   std::vector<std::vector<double>> servo_degrees;
+  // How many fake SDK objects were built, and how many deleted (F-417).
+  int built = 0;
+  int destroyed = 0;
 };
 
 class FakeRobotSdk : public fairino_hardware::RobotSdk
 {
 public:
   explicit FakeRobotSdk(std::shared_ptr<SdkScript> script)
-  : script_(std::move(script)) {}
+  : script_(std::move(script)) {++script_->built;}
+  ~FakeRobotSdk() override {++script_->destroyed;}
 
   errno_t RPC(const char * ip) override
   {
@@ -780,4 +784,31 @@ TEST(FairinoHardwareInterface, TheDrillRefusesWithoutCallingServoJAndEndsWhenOff
   EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_WARN, {"accepted again after 10 refusals"}), 1);
   EXPECT_EQ(published.back().level, diagnostic_msgs::msg::DiagnosticStatus::OK);
   unsetenv(INJECTION_ENV);
+}
+
+// F-417: on_deactivate called `_ptr_robot.release()`, which drops the SDK
+// object without deleting it: one leaked per deactivation. Each activation
+// builds one; each deactivation must delete it.
+TEST(FairinoHardwareInterface, DeactivatingDeletesTheSdkObject)
+{
+  auto script = std::make_shared<SdkScript>();
+  {
+    fairino_hardware::FairinoHardwareInterface driver(
+      fakeSdk(script), [](const diagnostic_msgs::msg::DiagnosticStatus &) {return true;});
+    ASSERT_EQ(
+      driver.on_init(robotWith(std::vector<std::vector<std::string>>(6, POSITION_ONLY))),
+      CallbackReturn::SUCCESS);
+    auto commands = driver.export_command_interfaces();
+    const rclcpp_lifecycle::State active(
+      lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "active");
+    for (int cycle = 1; cycle <= 2; ++cycle) {
+      ASSERT_EQ(driver.on_activate(INACTIVE), CallbackReturn::SUCCESS);
+      ASSERT_EQ(driver.on_deactivate(active), CallbackReturn::SUCCESS);
+      EXPECT_EQ(script->built, cycle);
+      EXPECT_EQ(script->destroyed, cycle) << "the SDK object of activation " << cycle << " leaked";
+    }
+    EXPECT_THAT(script->calls, testing::Contains("StopMotion"));
+    EXPECT_THAT(script->calls, testing::Contains("CloseRPC"));
+  }
+  EXPECT_EQ(script->destroyed, script->built);
 }
