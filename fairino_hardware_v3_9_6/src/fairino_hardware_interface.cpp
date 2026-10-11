@@ -121,6 +121,27 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_init(const hardw
         _transient_read_error_tolerance_ns = ms * 1000000;
     }
 
+    const auto drill = info_.hardware_parameters.find("servoj_refusal_injection");
+    if (drill != info_.hardware_parameters.end() && drill->second != "false") {
+        if (drill->second != "true") {
+            RCLCPP_FATAL(rclcpp::get_logger("FairinoHardwareInterface"),
+                        "servoj_refusal_injection: '%s' is neither true nor false", drill->second.c_str());
+            return hardware_interface::CallbackReturn::ERROR;
+        }
+        const char * allowed = std::getenv(SERVOJ_REFUSAL_INJECTION_ENV);
+        if (allowed == nullptr || allowed[0] == '\0' || allowed[0] == '0') {
+            RCLCPP_FATAL(rclcpp::get_logger("FairinoHardwareInterface"),
+                        "servoj_refusal_injection is true, but %s is not set: the code-14 drill is "
+                        "a bench drill and is refused elsewhere", SERVOJ_REFUSAL_INJECTION_ENV);
+            return hardware_interface::CallbackReturn::ERROR;
+        }
+        _injection_available = true;
+        RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"),
+                    "servoj_refusal_injection is on: ~/inject_servoj_refusal (std_srvs/SetBool) makes "
+                    "write() send no ServoJ and read code 14, the arm still. A bench drill, never a "
+                    "production run");
+    }
+
     const auto step = info_.hardware_parameters.find("resume_max_step_rad");
     if (step != info_.hardware_parameters.end()) {
         double rad = -1.0;
@@ -207,6 +228,16 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_activate(const r
     _refusal = RefusalEpisode();
     _resume_hold = false;
     _hold_said = false;
+    _injecting = false;
+    if (_injection_available && !_injection_service && get_node() != nullptr) {
+        _injection_service = get_node()->create_service<std_srvs::srv::SetBool>(
+            "~/inject_servoj_refusal",
+            [this](const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+                   std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+                response->success = injectServoJRefusal(request->data);
+                response->message = request->data ? "ServoJ refusal drill on" : "ServoJ refusal drill off";
+            });
+    }
     if (!_diagnostic_sink) {
         // F-226: the contract on /diagnostics, from the component's own node
         // (ros2_control creates it); a RealtimePublisher, whose try-lock never
@@ -350,6 +381,18 @@ hardware_interface::return_type FairinoHardwareInterface::read(const rclcpp::Tim
 
 }
 
+bool FairinoHardwareInterface::injectServoJRefusal(bool on)
+{
+    if (!_injection_available) {
+        return false;
+    }
+    _injecting = on;
+    RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"),
+                "ServoJ refusal drill %s", on ? "ON: no ServoJ is sent, every cycle reads as code 14"
+                                              : "off: ServoJ is sent again");
+    return true;
+}
+
 diagnostic_msgs::msg::DiagnosticStatus FairinoHardwareInterface::servoJStatus() const
 {
     diagnostic_msgs::msg::DiagnosticStatus status;
@@ -439,7 +482,9 @@ hardware_interface::return_type FairinoHardwareInterface::write(const rclcpp::Ti
         }
         //RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "ServoJ下发位置:%f,%f,%f,%f,%f,%f",\
             cmd.jPos[0],cmd.jPos[1],cmd.jPos[2],cmd.jPos[3],cmd.jPos[4],cmd.jPos[5]);
-        int returncode = _ptr_robot->ServoJ(&cmd,&extcmd,0,0,0.008,0,0);
+        // The code-14 drill: nothing reaches the controller, and the cycle
+        // reads as the refusal the bench has met.
+        int returncode = _injecting ? ERR_EXECUTION_FAILED : _ptr_robot->ServoJ(&cmd,&extcmd,0,0,0.008,0,0);
         // F-226: this was an INFO line every 10 ms, and nothing else; the
         // refusal is now an episode, said once and published.
         noteServoJ(returncode, time);

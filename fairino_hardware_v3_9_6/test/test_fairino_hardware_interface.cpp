@@ -703,3 +703,81 @@ TEST(FairinoHardwareInterface, TheResumeStepIsAHardwareParameter)
   }
   EXPECT_NEAR(script->servo_degrees.back()[1], -20.0 + 0.2 / DEG, 1e-9);
 }
+
+// --- the code-14 drill (row 0.F7) ------------------------------------------
+
+constexpr const char * INJECTION_ENV = "FAIRINO_HARDWARE_ALLOW_SERVOJ_REFUSAL_INJECTION";
+
+hardware_interface::HardwareInfo drillDescription()
+{
+  auto info = robotWith(std::vector<std::vector<std::string>>(6, POSITION_AND_VELOCITY));
+  info.hardware_parameters["servoj_refusal_injection"] = "true";
+  return info;
+}
+
+// Asked for in the description without the env variable: the driver refuses
+// to load, so a switch left in a description cannot reach a production run.
+TEST(FairinoHardwareInterface, TheDrillIsRefusedWithoutItsEnvironmentVariable)
+{
+  unsetenv(INJECTION_ENV);
+  auto script = std::make_shared<SdkScript>();
+  fairino_hardware::FairinoHardwareInterface driver(fakeSdk(script));
+  EXPECT_EQ(driver.on_init(drillDescription()), CallbackReturn::ERROR);
+}
+
+// Off by default: nothing to switch on.
+TEST(FairinoHardwareInterface, TheDrillIsUnavailableUnlessDescribed)
+{
+  setenv(INJECTION_ENV, "1", 1);
+  ServoingDriver arm;
+  EXPECT_FALSE(arm.driver.injectServoJRefusal(true));
+  arm.script->calls.clear();
+  ASSERT_EQ(arm.cycleAt(0), hardware_interface::return_type::OK);
+  EXPECT_THAT(arm.script->calls, testing::Contains("ServoJ"));
+  unsetenv(INJECTION_ENV);
+}
+
+// On: no ServoJ reaches the controller, the refusal is said as a real one
+// would be (ERROR, the diagnostic), and switching it off ends the episode.
+TEST(FairinoHardwareInterface, TheDrillRefusesWithoutCallingServoJAndEndsWhenOff)
+{
+  setenv(INJECTION_ENV, "1", 1);
+  auto script = std::make_shared<SdkScript>();
+  std::vector<diagnostic_msgs::msg::DiagnosticStatus> published;
+  fairino_hardware::FairinoHardwareInterface driver(
+    fakeSdk(script), [&published](const diagnostic_msgs::msg::DiagnosticStatus & status) {
+      published.push_back(status);
+      return true;
+    });
+  LogCapture log;
+  ASSERT_EQ(driver.on_init(drillDescription()), CallbackReturn::SUCCESS);
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_WARN, {"servoj_refusal_injection"}), 1)
+    << "said at start-up";
+  auto states = driver.export_state_interfaces();
+  auto commands = driver.export_command_interfaces();
+  ASSERT_EQ(driver.on_activate(INACTIVE), CallbackReturn::SUCCESS);
+  auto cycle = [&](int64_t ms) {
+      const rclcpp::Time time(ms * 1000000);
+      EXPECT_EQ(driver.read(time, rclcpp::Duration(0, 10000000)), hardware_interface::return_type::OK);
+      return driver.write(time, rclcpp::Duration(0, 10000000));
+    };
+  ASSERT_EQ(cycle(0), hardware_interface::return_type::OK);
+
+  ASSERT_TRUE(driver.injectServoJRefusal(true));
+  script->calls.clear();
+  for (int64_t ms = 10; ms <= 100; ms += 10) {
+    EXPECT_EQ(cycle(ms), hardware_interface::return_type::OK);
+  }
+  EXPECT_THAT(script->calls, testing::Not(testing::Contains("ServoJ")));
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_ERROR, {"ServoJ refused, code 14", "错误码:14"}), 1);
+  ASSERT_FALSE(published.empty());
+  EXPECT_EQ(published.back().level, diagnostic_msgs::msg::DiagnosticStatus::ERROR);
+  EXPECT_EQ(published.back().message, "ServoJ refused, code 14");
+
+  ASSERT_TRUE(driver.injectServoJRefusal(false));
+  EXPECT_EQ(cycle(110), hardware_interface::return_type::OK);
+  EXPECT_THAT(script->calls, testing::Contains("ServoJ"));
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_WARN, {"accepted again after 10 refusals"}), 1);
+  EXPECT_EQ(published.back().level, diagnostic_msgs::msg::DiagnosticStatus::OK);
+  unsetenv(INJECTION_ENV);
+}

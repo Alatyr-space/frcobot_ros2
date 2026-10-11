@@ -15,10 +15,15 @@
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "fairino_hardware/refusal_episode.hpp"
 #include "realtime_tools/realtime_publisher.hpp"
+#include <atomic>
 #include <functional>
+#include "std_srvs/srv/set_bool.hpp"
 
 
 #define CONTROLLER_IP_ADDRESS "192.168.58.2"
+
+// The environment variable without which the code-14 drill refuses to load.
+#define SERVOJ_REFUSAL_INJECTION_ENV "FAIRINO_HARDWARE_ALLOW_SERVOJ_REFUSAL_INJECTION"
 
 namespace fairino_hardware
 {
@@ -43,6 +48,14 @@ public:
 
   FAIRINO_HARDWARE_PUBLIC
   FairinoHardwareInterface(RobotSdkFactory sdk_factory, DiagnosticSink diagnostic_sink);
+
+  // The bench's code-14 drill (row 0.F7, the owner's choice of 2026-10-11):
+  // while on, write() sends no ServoJ and takes the answer as code 14, so the
+  // whole chain is walked with the arm still. Available only with the
+  // `servoj_refusal_injection` <param> true and SERVOJ_REFUSAL_INJECTION_ENV
+  // set; returns whether the switch is now as asked.
+  FAIRINO_HARDWARE_PUBLIC
+  bool injectServoJRefusal(bool on);
 
   FAIRINO_HARDWARE_PUBLIC
   hardware_interface::CallbackReturn on_init(const hardware_interface::HardwareInfo& info) override;
@@ -110,6 +123,13 @@ private:
   double _resume_max_step_rad = 0.01;
   bool _resume_hold = false;
   bool _hold_said = false;
+
+  // The code-14 drill: allowed by the description and the environment at
+  // on_init, switched by ~/inject_servoj_refusal (std_srvs/SetBool) on the
+  // component's node; read by write() in the control loop.
+  bool _injection_available = false;
+  std::atomic<bool> _injecting{false};
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr _injection_service;
   diagnostic_msgs::msg::DiagnosticStatus servoJStatus() const;
 
   // F-323: a -2 (ERR_SOCKET_COM_FAILED) on a read is held through, the last

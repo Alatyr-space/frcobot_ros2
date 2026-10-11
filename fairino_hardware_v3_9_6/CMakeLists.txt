@@ -17,6 +17,7 @@ find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(realtime_tools REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(fairino_msgs REQUIRED)
 
@@ -76,6 +77,7 @@ ament_target_dependencies(fairino_hardware
   diagnostic_msgs
   hardware_interface
   realtime_tools
+  std_srvs
   pluginlib
   rclcpp
   fairino_msgs
@@ -151,6 +153,6 @@ endif()
 
 #export
 ament_export_targets(fairino_hardware HAS_LIBRARY_TARGET)
-ament_export_dependencies(ament_cmake rclcpp hardware_interface pluginlib rclcpp_lifecycle diagnostic_msgs realtime_tools)
+ament_export_dependencies(ament_cmake rclcpp hardware_interface pluginlib rclcpp_lifecycle diagnostic_msgs realtime_tools std_srvs)
 
 ament_package()
