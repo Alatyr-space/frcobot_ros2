@@ -101,6 +101,15 @@ private:
   std::shared_ptr<realtime_tools::RealtimePublisher<diagnostic_msgs::msg::DiagnosticArray>>
     _diagnostic_publisher;
   void noteServoJ(int code, const rclcpp::Time & time);
+
+  // Q-C1 (a), the owner's: once a refusal episode has begun, and until the
+  // command is back within this of the measured position on every joint,
+  // write() sends the measured position -- a hold. The controller executes
+  // whatever it is sent the moment it accepts again; this only ever
+  // withholds motion.
+  double _resume_max_step_rad = 0.01;
+  bool _resume_hold = false;
+  bool _hold_said = false;
   diagnostic_msgs::msg::DiagnosticStatus servoJStatus() const;
 
   // F-323: a -2 (ERR_SOCKET_COM_FAILED) on a read is held through, the last

@@ -649,3 +649,57 @@ TEST(FairinoHardwareInterface, TheDiagnosticReachesTheTopic)
   }
   rclcpp::shutdown();
 }
+
+// Q-C1 (a), the owner's answer: once a refusal episode has begun, the
+// controller executes whatever command is current the moment it accepts
+// again. Until the command is back within resume_max_step_rad (0.01) of the
+// measured position on every joint, the driver sends the measured position:
+// a hold. It can only withhold motion.
+TEST(FairinoHardwareInterface, AfterAnEpisodeTheDriverHoldsUntilTheCommandIsNearTheArm)
+{
+  ServoingDriver arm;
+  LogCapture log;
+  const double p2 = -20.0;  // j2, as the arm measures it (degrees)
+  ASSERT_EQ(arm.cycleAt(0), hardware_interface::return_type::OK);
+  arm.script->servo_codes = std::deque<int>(5, 14);  // 10 to 50 ms
+  arm.command(1, p2 * DEG + 0.2);
+  for (int64_t ms = 10; ms <= 50; ms += 10) {
+    ASSERT_EQ(arm.cycleAt(ms), hardware_interface::return_type::OK);
+  }
+  ASSERT_EQ(arm.cycleAt(60), hardware_interface::return_type::OK);  // accepted again
+  ASSERT_EQ(arm.cycleAt(70), hardware_interface::return_type::OK);
+  const auto & accepted = arm.script->servo_degrees[6];
+  EXPECT_NEAR(accepted[1], p2, 1e-9) << "the measured position, not the command 0.2 rad away";
+  EXPECT_NEAR(arm.script->servo_degrees[7][1], p2, 1e-9);
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_WARN, {"holding the arm"}), 1);
+
+  arm.command(1, p2 * DEG + 0.005);  // within 0.01 rad of the arm
+  ASSERT_EQ(arm.cycleAt(80), hardware_interface::return_type::OK);
+  EXPECT_NEAR(arm.script->servo_degrees.back()[1], p2 + 0.005 / DEG, 1e-9) << "let go";
+  arm.command(1, p2 * DEG + 0.2);  // no episode since: the command goes as it is
+  ASSERT_EQ(arm.cycleAt(90), hardware_interface::return_type::OK);
+  EXPECT_NEAR(arm.script->servo_degrees.back()[1], p2 + 0.2 / DEG, 1e-9);
+}
+
+TEST(FairinoHardwareInterface, TheResumeStepIsAHardwareParameter)
+{
+  auto script = std::make_shared<SdkScript>();
+  auto info = robotWith(std::vector<std::vector<std::string>>(6, POSITION_ONLY));
+  info.hardware_parameters["resume_max_step_rad"] = "-0.1";
+  fairino_hardware::FairinoHardwareInterface refused(fakeSdk(script));
+  EXPECT_EQ(refused.on_init(info), CallbackReturn::ERROR);
+  info.hardware_parameters["resume_max_step_rad"] = "0.3";
+  fairino_hardware::FairinoHardwareInterface wide(
+    fakeSdk(script), [](const diagnostic_msgs::msg::DiagnosticStatus &) {return true;});
+  ASSERT_EQ(wide.on_init(info), CallbackReturn::SUCCESS);
+  auto commands = wide.export_command_interfaces();
+  ASSERT_EQ(wide.on_activate(INACTIVE), CallbackReturn::SUCCESS);
+  script->servo_codes = {14};
+  (void)commands[1].set_value(-20.0 * DEG + 0.2);  // within 0.3 rad
+  for (int64_t ms = 0; ms <= 20; ms += 10) {
+    const rclcpp::Time time(ms * 1000000);
+    ASSERT_EQ(wide.read(time, rclcpp::Duration(0, 10000000)), hardware_interface::return_type::OK);
+    ASSERT_EQ(wide.write(time, rclcpp::Duration(0, 10000000)), hardware_interface::return_type::OK);
+  }
+  EXPECT_NEAR(script->servo_degrees.back()[1], -20.0 + 0.2 / DEG, 1e-9);
+}

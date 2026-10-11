@@ -120,6 +120,27 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_init(const hardw
         }
         _transient_read_error_tolerance_ns = ms * 1000000;
     }
+
+    const auto step = info_.hardware_parameters.find("resume_max_step_rad");
+    if (step != info_.hardware_parameters.end()) {
+        double rad = -1.0;
+        try {
+            size_t used = 0;
+            rad = std::stod(step->second, &used);
+            if (used != step->second.size()) {
+                rad = -1.0;
+            }
+        } catch (const std::exception &) {
+            rad = -1.0;
+        }
+        if (!(rad > 0.0) || !std::isfinite(rad)) {
+            RCLCPP_FATAL(rclcpp::get_logger("FairinoHardwareInterface"),
+                        "resume_max_step_rad: '%s' is not a positive angle in radians",
+                        step->second.c_str());
+            return hardware_interface::CallbackReturn::ERROR;
+        }
+        _resume_max_step_rad = rad;
+    }
     return hardware_interface::CallbackReturn::SUCCESS;
 }//end on_init
 
@@ -184,6 +205,8 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_activate(const r
     }
     _read_failing = false;
     _refusal = RefusalEpisode();
+    _resume_hold = false;
+    _hold_said = false;
     if (!_diagnostic_sink) {
         // F-226: the contract on /diagnostics, from the component's own node
         // (ros2_control creates it); a RealtimePublisher, whose try-lock never
@@ -357,6 +380,9 @@ diagnostic_msgs::msg::DiagnosticStatus FairinoHardwareInterface::servoJStatus() 
 void FairinoHardwareInterface::noteServoJ(int code, const rclcpp::Time & time)
 {
     const auto event = _refusal.observe(code, time.nanoseconds());
+    if (event == RefusalEpisode::Event::Started) {
+        _resume_hold = true;
+    }
     if (event == RefusalEpisode::Event::Started || event == RefusalEpisode::Event::CodeChanged) {
         // The vendor's own text kept beside the English: every row and sheet
         // that greps 错误码 still finds the onset.
@@ -390,6 +416,26 @@ hardware_interface::return_type FairinoHardwareInterface::write(const rclcpp::Ti
         ExaxisPos extcmd{0,0,0,0};
         for(auto j=0;j<6;j++){
             cmd.jPos[j] = _jnt_position_command[j]/M_PI*180; //注意单位转换
+        }
+        if (_resume_hold) {
+            double farthest = 0.0;
+            for (int j = 0; j < 6; j++) {
+                farthest = std::max(farthest, std::abs(_jnt_position_command[j] - _jnt_position_state[j]));
+            }
+            if (farthest > _resume_max_step_rad) {
+                if (!_hold_said) {
+                    RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"),
+                                "holding the arm: the command is %.3f rad from it after a refusal episode",
+                                farthest);
+                    _hold_said = true;
+                }
+                for (int j = 0; j < 6; j++) {
+                    cmd.jPos[j] = _jnt_position_state[j]/M_PI*180;
+                }
+            } else if (!_refusal.active()) {
+                _resume_hold = false;
+                _hold_said = false;
+            }
         }
         //RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "ServoJ下发位置:%f,%f,%f,%f,%f,%f",\
             cmd.jPos[0],cmd.jPos[1],cmd.jPos[2],cmd.jPos[3],cmd.jPos[4],cmd.jPos[5]);
