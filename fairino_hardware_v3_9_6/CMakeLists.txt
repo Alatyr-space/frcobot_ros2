@@ -15,6 +15,9 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
+find_package(realtime_tools REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(fairino_msgs REQUIRED)
 
@@ -71,7 +74,10 @@ target_link_libraries(fairino_hardware "-Wl,-rpath,$ORIGIN" ${CMAKE_CURRENT_SOUR
 ament_target_dependencies(ros2_cmd_server rclcpp fairino_msgs)
 ament_target_dependencies(srv_test_client rclcpp fairino_msgs)
 ament_target_dependencies(fairino_hardware 
+  diagnostic_msgs
   hardware_interface
+  realtime_tools
+  std_srvs
   pluginlib
   rclcpp
   fairino_msgs
@@ -136,13 +142,17 @@ if(BUILD_TESTING)
   # F-204, F-184: the velocity export and write()'s guard on every joint.
   # Run alone with: colcon test --packages-select fairino_hardware_v3_9_6
   #   --ctest-args -R test_fairino_hardware_interface
-  ament_add_gmock(test_fairino_hardware_interface test/test_fairino_hardware_interface.cpp)
+  # FAIRINO_HARDWARE_TEST_NO_ROBOT: the real SDK refuses to be built, so no
+  # test can reach the controller.
+  ament_add_gmock(test_fairino_hardware_interface test/test_fairino_hardware_interface.cpp
+    ENV FAIRINO_HARDWARE_TEST_NO_ROBOT=1 ROS_DOMAIN_ID=77 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST)
   target_link_libraries(test_fairino_hardware_interface fairino_hardware)
-  ament_target_dependencies(test_fairino_hardware_interface hardware_interface rclcpp)
+  ament_target_dependencies(test_fairino_hardware_interface
+    diagnostic_msgs hardware_interface pluginlib rclcpp rclcpp_lifecycle)
 endif()
 
 #export
 ament_export_targets(fairino_hardware HAS_LIBRARY_TARGET)
-ament_export_dependencies(ament_cmake rclcpp hardware_interface pluginlib rclcpp_lifecycle)
+ament_export_dependencies(ament_cmake rclcpp hardware_interface pluginlib rclcpp_lifecycle diagnostic_msgs realtime_tools std_srvs)
 
 ament_package()

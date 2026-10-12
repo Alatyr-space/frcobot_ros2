@@ -23,3 +23,20 @@ fairino10_controller:
       - position
     state_interfaces:
       - position
+    # F-226 (AN-007): with no constraints the controller checked no
+    # tolerance, so a goal the arm never followed (ServoJ refused, the arm
+    # still) was reported reached. The goal tolerance catches an arm that did
+    # not arrive -- not an accuracy gate; the path (trajectory) tolerance
+    # aborts mid-move, which keeps a refused move short. After an abort the
+    # controller holds the measured position (open_loop_control and
+    # interpolate_from_desired_state false). Bench numbers, radians, set
+    # 2026-10-12; the bench repository's contract test holds them.
+    constraints:
+      goal_time: 1.0
+      stopped_velocity_tolerance: 0.01
+      j1: {trajectory: 0.05, goal: 0.005}
+      j2: {trajectory: 0.05, goal: 0.005}
+      j3: {trajectory: 0.05, goal: 0.005}
+      j4: {trajectory: 0.05, goal: 0.005}
+      j5: {trajectory: 0.05, goal: 0.005}
+      j6: {trajectory: 0.05, goal: 0.005}

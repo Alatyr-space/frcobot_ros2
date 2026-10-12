@@ -7,6 +7,20 @@
             <hardware>
                 <!-- The real arm's hardware interface, not a simulation. The component is named in the robot xacro; it was `FakeSystem` upstream (Alatyr F-159). -->
                 <plugin>fairino_hardware/FairinoHardwareInterface</plugin>
+                <!-- F-323: how long a -2 (ERR_SOCKET_COM_FAILED) on a state
+                     read is held through, the last good state kept, before
+                     the read fails and the arm is deactivated -->
+                <param name="transient_read_error_tolerance_ms">100</param>
+                <!-- Q-C1 (a): after a refused ServoJ, the driver sends the
+                     measured position until the command is back within this
+                     of it on every joint (rad); it only withholds motion -->
+                <param name="resume_max_step_rad">0.01</param>
+                <!-- The code-14 drill (bench row 0.F7): true, with
+                     FAIRINO_HARDWARE_ALLOW_SERVOJ_REFUSAL_INJECTION=1 in the
+                     Arm module's environment, offers ~/inject_servoj_refusal
+                     on the component's node. Refused to load without the
+                     variable. Never true in a production run -->
+                <param name="servoj_refusal_injection">false</param>
             </hardware>
             <joint name="j1">
                 <command_interface name="position"/>
