@@ -9,6 +9,6 @@
     <xacro:include filename="fairino10_v6_robot.ros2_control.xacro" />
 
 
-    <xacro:fairino10_v6_robot_ros2_control name="FakeSystem" initial_positions_file="$(arg initial_positions_file)"/>
+    <xacro:fairino10_v6_robot_ros2_control name="fairino10_v6_hardware" initial_positions_file="$(arg initial_positions_file)"/>
 
 </robot>

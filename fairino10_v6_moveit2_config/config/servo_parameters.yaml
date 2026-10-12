@@ -21,11 +21,11 @@ scale:
 
 incoming_command_timeout: 0.2
 
-# MoveIt group and frames from the Fairino SRDF.
+# MoveIt group from the Fairino SRDF.
+# Servo 2.12.4 takes its planning frame and tip from the IK solver's chain in
+# the SRDF (base_link -> wrist3_link); it has no planning_frame, ee_frame_name
+# or robot_link_command_frame (Alatyr F-346).
 move_group_name: fairino10_v6_group
-planning_frame: base_link
-ee_frame_name: wrist3_link
-robot_link_command_frame: base_link
 
 # Incoming Servo command topics. With node name "servo_node", these resolve to:
 #   /servo_node/delta_twist_cmds

@@ -35,6 +35,69 @@ def yaml_get(data, key, default="NOT FOUND"):
     return data.get(key, default) if isinstance(data, dict) else default
 
 
+# The parameters MoveIt Servo 2.12.4 declares (Alatyr F-346). Source:
+# moveit_servo/config/servo_parameters.yaml at the 2.12.4 tag, cross-checked
+# against the 40 `moveit_servo.*` lines of a Servo node's own parameter dump;
+# nested ones are written flattened (`scale.linear`).
+SERVO_2_12_4_PARAMETERS = frozenset([
+    "active_subgroup",
+    "apply_twist_commands_about_ee_frame",
+    "cartesian_command_in_topic",
+    "check_collisions",
+    "check_octomap_collisions",
+    "collision_check_rate",
+    "command_in_type",
+    "command_out_topic",
+    "command_out_type",
+    "halt_all_joints_in_cartesian_mode",
+    "halt_all_joints_in_joint_mode",
+    "hard_stop_singularity_threshold",
+    "incoming_command_timeout",
+    "is_primary_planning_scene_monitor",
+    "joint_command_in_topic",
+    "joint_limit_margins",
+    "joint_topic",
+    "leaving_singularity_threshold_multiplier",
+    "lower_singularity_threshold",
+    "max_expected_latency",
+    "monitored_planning_scene_topic",
+    "move_group_name",
+    "override_velocity_scaling_factor",
+    "pose_command_in_topic",
+    "pose_tracking.angular_tolerance",
+    "pose_tracking.linear_tolerance",
+    "publish_joint_accelerations",
+    "publish_joint_positions",
+    "publish_joint_velocities",
+    "publish_period",
+    "scale.joint",
+    "scale.linear",
+    "scale.rotational",
+    "scene_collision_proximity_threshold",
+    "self_collision_proximity_threshold",
+    "singularity_step_scale",
+    "smoothing_filter_plugin_name",
+    "status_topic",
+    "thread_priority",
+    "use_smoothing",
+])
+
+# Launch-only YAML keys that Servo does not declare but this launch reads.
+# None today: move_group_name is a Servo parameter and also feeds
+# planning_group_name below.
+LAUNCH_ONLY_KEYS = frozenset()
+
+
+def flatten_keys(mapping, prefix=""):
+    names = []
+    for key, value in mapping.items():
+        if isinstance(value, dict):
+            names.extend(flatten_keys(value, f"{prefix}{key}."))
+        else:
+            names.append(f"{prefix}{key}")
+    return names
+
+
 def print_servo_diagnostics(servo_yaml, servo_log_level):
     keys = [
         "publish_period",
@@ -42,9 +105,6 @@ def print_servo_diagnostics(servo_yaml, servo_log_level):
         "command_in_type",
         "scale",
         "move_group_name",
-        "planning_frame",
-        "ee_frame_name",
-        "robot_link_command_frame",
         "cartesian_command_in_topic",
         "joint_topic",
         "status_topic",
@@ -66,6 +126,11 @@ def print_servo_diagnostics(servo_yaml, servo_log_level):
     print(f"[servo.launch.py] package={PACKAGE_NAME}, robot={ROBOT_NAME}, servo_log_level={servo_log_level}")
     for key in keys:
         print(f"[servo.launch.py] {key}: {yaml_get(servo_yaml, key)}")
+    # A key Servo ignores must not look as if it were in force (Alatyr F-346).
+    if isinstance(servo_yaml, dict):
+        for key in flatten_keys(servo_yaml):
+            if key not in SERVO_2_12_4_PARAMETERS and key not in LAUNCH_ONLY_KEYS:
+                print(f"[servo.launch.py] WARNING: {key} is not a MoveIt Servo 2.12.4 parameter and is ignored")
     print("[servo.launch.py] Expected command input topic with node name 'servo_node': /servo_node/delta_twist_cmds")
     print("[servo.launch.py] Expected status topic with node name 'servo_node': /servo_node/status")
     print("[servo.launch.py] Expected controller output topic: " + str(yaml_get(servo_yaml, "command_out_topic")))
