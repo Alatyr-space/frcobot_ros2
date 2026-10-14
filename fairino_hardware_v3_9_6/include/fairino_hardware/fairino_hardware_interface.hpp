@@ -18,6 +18,7 @@
 #include <atomic>
 #include <functional>
 #include "std_srvs/srv/set_bool.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 
 #define CONTROLLER_IP_ADDRESS "192.168.58.2"
@@ -56,6 +57,22 @@ public:
   // set; returns whether the switch is now as asked.
   FAIRINO_HARDWARE_PUBLIC
   bool injectServoJRefusal(bool on);
+
+  // The read-error drill (row 0.F6, F-466), allowed as the code-14 drill is:
+  // the next `reads` cycles of read() take a -2 (ERR_SOCKET_COM_FAILED) on
+  // every state read without calling the SDK, as a transient socket error
+  // would. Under the bound they are held through (F-323); over it read()
+  // fails and ros2_control deactivates the arm. Returns whether the drill
+  // was armed.
+  FAIRINO_HARDWARE_PUBLIC
+  bool injectReadErrors(int reads);
+
+  // The counts ~/inject_read_errors_under and ~/inject_read_errors_over arm:
+  // half the bound and twice it, in the bench's 10 ms cycles (100 Hz).
+  FAIRINO_HARDWARE_PUBLIC
+  int readErrorsUnderTheBound() const;
+  FAIRINO_HARDWARE_PUBLIC
+  int readErrorsOverTheBound() const;
 
   FAIRINO_HARDWARE_PUBLIC
   hardware_interface::CallbackReturn on_init(const hardware_interface::HardwareInfo& info) override;
@@ -101,6 +118,9 @@ private:
   // F-204: whether the description declares a velocity state interface.
   // Exported, and read from the robot's feedback, only then.
   bool _export_velocity = false;
+  // F-447: whether it declares an effort state interface, after the
+  // velocity. Exported, and read from the robot's measured torque, only then.
+  bool _export_effort = false;
   std::string _controller_ip = CONTROLLER_IP_ADDRESS;
   RobotSdkFactory _sdk_factory;
   std::unique_ptr<RobotSdk> _ptr_robot;
@@ -130,6 +150,12 @@ private:
   bool _injection_available = false;
   std::atomic<bool> _injecting{false};
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr _injection_service;
+  // The read-error drill: cycles of read() still owed a -2, armed by
+  // ~/inject_read_errors_under and ~/inject_read_errors_over
+  // (std_srvs/Trigger), each read() taking one.
+  std::atomic<int> _read_errors_owed{0};
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr _read_errors_under_service;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr _read_errors_over_service;
   diagnostic_msgs::msg::DiagnosticStatus servoJStatus() const;
 
   // F-323: a -2 (ERR_SOCKET_COM_FAILED) on a read is held through, the last

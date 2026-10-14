@@ -15,11 +15,15 @@
                      measured position until the command is back within this
                      of it on every joint (rad); it only withholds motion -->
                 <param name="resume_max_step_rad">0.01</param>
-                <!-- The code-14 drill (bench row 0.F7): true, with
+                <!-- The code-14 drill (bench row 0.F7) and the read-error
+                     drill (row 0.F6, F-466): true, with
                      FAIRINO_HARDWARE_ALLOW_SERVOJ_REFUSAL_INJECTION=1 in the
                      Arm module's environment, offers ~/inject_servoj_refusal
-                     on the component's node. Refused to load without the
-                     variable. Never true in a production run -->
+                     (std_srvs/SetBool), ~/inject_read_errors_under and
+                     ~/inject_read_errors_over (std_srvs/Trigger: the next 5
+                     or 20 state reads return -2, under and over the 100 ms
+                     bound) on the component's node. Refused to load without
+                     the variable. Never true in a production run -->
                 <param name="servoj_refusal_injection">false</param>
             </hardware>
             <joint name="j1">
@@ -30,6 +34,9 @@
                 <!-- F-204: the robot-measured speed. Without it every /joint_states
                      velocity is NaN, which MoveIt Servo takes in (F-184). -->
                 <state_interface name="velocity"/>
+                <!-- F-447: the robot-measured torque. Without it every
+                     /joint_states effort is NaN, which pymoveit2 refuses. -->
+                <state_interface name="effort"/>
             </joint>
             <joint name="j2">
                 <command_interface name="position"/>
@@ -37,6 +44,7 @@
                   <param name="initial_value">${initial_positions['j2']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
+                <state_interface name="effort"/>
             </joint>
             <joint name="j3">
                 <command_interface name="position"/>
@@ -44,6 +52,7 @@
                   <param name="initial_value">${initial_positions['j3']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
+                <state_interface name="effort"/>
             </joint>
             <joint name="j4">
                 <command_interface name="position"/>
@@ -51,6 +60,7 @@
                   <param name="initial_value">${initial_positions['j4']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
+                <state_interface name="effort"/>
             </joint>
             <joint name="j5">
                 <command_interface name="position"/>
@@ -58,6 +68,7 @@
                   <param name="initial_value">${initial_positions['j5']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
+                <state_interface name="effort"/>
             </joint>
             <joint name="j6">
                 <command_interface name="position"/>
@@ -65,6 +76,7 @@
                   <param name="initial_value">${initial_positions['j6']}</param>
                 </state_interface>
                 <state_interface name="velocity"/>
+                <state_interface name="effort"/>
             </joint>
 
         </ros2_control>

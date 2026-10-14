@@ -30,6 +30,7 @@ public:
   virtual errno_t StopMotion() = 0;
   virtual errno_t GetActualJointPosDegree(uint8_t flag, JointPos * jPos) = 0;
   virtual errno_t GetActualJointSpeedsDegree(uint8_t flag, float speed[6]) = 0;
+  virtual errno_t GetJointTorques(uint8_t flag, float torques[6]) = 0;
   virtual errno_t ServoJ(
     JointPos * joint_pos, ExaxisPos * axisPos, float acc, float vel, float cmdT,
     float filterT, float gain) = 0;
@@ -49,6 +50,10 @@ public:
   errno_t GetActualJointSpeedsDegree(uint8_t flag, float speed[6]) override
   {
     return robot_.GetActualJointSpeedsDegree(flag, speed);
+  }
+  errno_t GetJointTorques(uint8_t flag, float torques[6]) override
+  {
+    return robot_.GetJointTorques(flag, torques);
   }
   errno_t ServoJ(
     JointPos * joint_pos, ExaxisPos * axisPos, float acc, float vel, float cmdT,

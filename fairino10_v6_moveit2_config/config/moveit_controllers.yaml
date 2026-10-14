@@ -19,3 +19,12 @@ moveit_simple_controller_manager:
       - j6
     action_ns: follow_joint_trajectory
     default: true
+
+# MoveIt cancels a trajectory past its planned duration x
+# allowed_execution_duration_scaling (1.2, the default) +
+# allowed_goal_duration_margin. The default margin, 0.5 s, gave a 2 mm Nudge
+# (planned ~0.2 s) about 0.75 s, before fairino10_controller's goal_time
+# (1.0 s) at its 0.0001 rad goal tolerance; the arm settles in 0.6 to 0.9 s
+# after a small move (F-477, bench visit 21, 0.F10).
+trajectory_execution:
+  allowed_goal_duration_margin: 1.2
