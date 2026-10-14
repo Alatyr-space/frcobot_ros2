@@ -59,8 +59,11 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_init(const hardw
         // joint speed. Without it joint_state_broadcaster publishes every
         // velocity as NaN, which MoveIt Servo takes in when it re-seeds
         // from /joint_states and turns into NaN commands (F-184).
-        if (joint.state_interfaces.size() != 1 && joint.state_interfaces.size() != 2) {
-            RCLCPP_FATAL(rclcpp::get_logger("FairinoHardwareInterface"), "Joint '%s' has %zu state interfaces. 1 or 2 expected.",
+        // F-447: then optionally effort -- the robot-measured joint torque;
+        // without it every /joint_states effort is NaN, which pymoveit2
+        // 5.0.0 refuses in a start state.
+        if (joint.state_interfaces.size() < 1 || joint.state_interfaces.size() > 3) {
+            RCLCPP_FATAL(rclcpp::get_logger("FairinoHardwareInterface"), "Joint '%s' has %zu state interfaces. 1 to 3 expected.",
                         joint.name.c_str(), joint.state_interfaces.size());
             return hardware_interface::CallbackReturn::ERROR;
         }
@@ -72,7 +75,7 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_init(const hardw
             return hardware_interface::CallbackReturn::ERROR;
         }
 
-        if (joint.state_interfaces.size() == 2 &&
+        if (joint.state_interfaces.size() >= 2 &&
             joint.state_interfaces[1].name != hardware_interface::HW_IF_VELOCITY) {
             RCLCPP_FATAL(rclcpp::get_logger("FairinoHardwareInterface"),
                         "Joint '%s' have %s state interface as second state interface. '%s' expected.", joint.name.c_str(),
@@ -80,18 +83,19 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_init(const hardw
             return hardware_interface::CallbackReturn::ERROR;
         }
 
-        // if (joint.state_interfaces[2].name != hardware_interface::HW_IF_EFFORT) {
-        //     RCLCPP_FATAL(rclcpp::get_logger("FairinoHardwareInterface"),
-        //                 "Joint '%s' have %s state interface as third state interface. '%s' expected.", joint.name.c_str(),
-        //                 joint.state_interfaces[2].name.c_str(), hardware_interface::HW_IF_EFFORT);
-        //     return hardware_interface::CallbackReturn::ERROR;
-        // }
+        if (joint.state_interfaces.size() == 3 &&
+            joint.state_interfaces[2].name != hardware_interface::HW_IF_EFFORT) {
+            RCLCPP_FATAL(rclcpp::get_logger("FairinoHardwareInterface"),
+                        "Joint '%s' have %s state interface as third state interface. '%s' expected.", joint.name.c_str(),
+                        joint.state_interfaces[2].name.c_str(), hardware_interface::HW_IF_EFFORT);
+            return hardware_interface::CallbackReturn::ERROR;
+        }
 
     }
     // Every joint or none: a velocity on some joints only is refused here
     // rather than published half NaN.
     const size_t with_velocity = std::count_if(info_.joints.begin(), info_.joints.end(),
-        [](const hardware_interface::ComponentInfo& joint) { return joint.state_interfaces.size() == 2; });
+        [](const hardware_interface::ComponentInfo& joint) { return joint.state_interfaces.size() >= 2; });
     if (with_velocity != 0 && with_velocity != info_.joints.size()) {
         RCLCPP_FATAL(rclcpp::get_logger("FairinoHardwareInterface"),
                     "%zu of %zu joints declare a velocity state interface: all or none expected.",
@@ -99,6 +103,15 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_init(const hardw
         return hardware_interface::CallbackReturn::ERROR;
     }
     _export_velocity = with_velocity != 0;
+    const size_t with_effort = std::count_if(info_.joints.begin(), info_.joints.end(),
+        [](const hardware_interface::ComponentInfo& joint) { return joint.state_interfaces.size() == 3; });
+    if (with_effort != 0 && with_effort != info_.joints.size()) {
+        RCLCPP_FATAL(rclcpp::get_logger("FairinoHardwareInterface"),
+                    "%zu of %zu joints declare an effort state interface: all or none expected.",
+                    with_effort, info_.joints.size());
+        return hardware_interface::CallbackReturn::ERROR;
+    }
+    _export_effort = with_effort != 0;
 
     const auto tolerance = info_.hardware_parameters.find("transient_read_error_tolerance_ms");
     if (tolerance != info_.hardware_parameters.end()) {
@@ -184,8 +197,10 @@ std::vector<hardware_interface::StateInterface> FairinoHardwareInterface::export
           info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, &_jnt_velocity_state[i]));
     }
 
-    // state_interfaces.emplace_back(hardware_interface::StateInterface(
-    //     info_.joints[i].name, hardware_interface::HW_IF_EFFORT, &_jnt_torque_state.at(i)));
+    if (_export_effort) {
+      state_interfaces.emplace_back(hardware_interface::StateInterface(
+          info_.joints[i].name, hardware_interface::HW_IF_EFFORT, &_jnt_torque_state[i]));
+    }
   }
 
   //导出
@@ -386,6 +401,25 @@ hardware_interface::return_type FairinoHardwareInterface::read(const rclcpp::Tim
             }
         } else if (acceptReadCode(returncode, "GetActualJointSpeedsDegree", time)) {
             transient = true;  // F-323: the last good speeds, held
+        } else {
+            return hardware_interface::return_type::ERROR;
+        }
+    }
+    if (_export_effort) {
+        // F-447: the robot-measured joint torque (flag 1: non-blocking, from
+        // the real-time state as the speeds are), as the SDK gives it.
+        float torque[6];
+        returncode = drilled ? ERR_SOCKET_COM_FAILED : _ptr_robot->GetJointTorques(1, torque);
+        if (returncode == 0) {
+            for (int i = 0; i < 6; i++) {
+                if (!std::isfinite(torque[i])) {
+                    RCLCPP_ERROR(rclcpp::get_logger("FairinoHardwareInterface"), "joint %d torque is not finite", i + 1);
+                    return hardware_interface::return_type::ERROR;
+                }
+                _jnt_torque_state[i] = torque[i];
+            }
+        } else if (acceptReadCode(returncode, "GetJointTorques", time)) {
+            transient = true;  // F-323: the last good torques, held
         } else {
             return hardware_interface::return_type::ERROR;
         }

@@ -68,6 +68,9 @@ HardwareInfo robotWith(const std::vector<std::vector<std::string>> & statesPerJo
 const std::vector<std::string> POSITION_AND_VELOCITY{
   hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY};
 const std::vector<std::string> POSITION_ONLY{hardware_interface::HW_IF_POSITION};
+const std::vector<std::string> POSITION_VELOCITY_AND_EFFORT{
+  hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY,
+  hardware_interface::HW_IF_EFFORT};
 
 // What the fake SDK was asked, and what it answers. Shared with the test, so
 // it outlives the fake (on_deactivate releases the SDK without deleting it).
@@ -76,9 +79,11 @@ struct SdkScript
   std::vector<std::string> calls;
   double joint_degrees[6]{10.0, -20.0, 30.0, -40.0, 50.0, -60.0};
   float speed_degrees[6]{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  float torques[6]{1.5, -2.5, 3.5, -4.5, 5.5, -6.5};
   // Codes to return, one per call, before falling back to 0.
   std::deque<int> position_codes;
   std::deque<int> speed_codes;
+  std::deque<int> torque_codes;
   std::deque<int> servo_codes;
   std::vector<std::vector<double>> servo_degrees;
   // How many fake SDK objects were built, and how many deleted (F-417).
@@ -118,6 +123,17 @@ public:
     if (code == 0) {
       for (int j = 0; j < 6; ++j) {
         speed[j] = script_->speed_degrees[j];
+      }
+    }
+    return code;
+  }
+  errno_t GetJointTorques(uint8_t flag, float torques[6]) override
+  {
+    script_->calls.push_back("GetJointTorques " + std::to_string(flag));
+    const int code = next(script_->torque_codes);
+    if (code == 0) {
+      for (int j = 0; j < 6; ++j) {
+        torques[j] = script_->torques[j];
       }
     }
     return code;
@@ -209,6 +225,39 @@ TEST(FairinoHardwareInterface, RefusesASecondStateInterfaceThatIsNotVelocity)
   EXPECT_EQ(
     driver.on_init(robotWith(std::vector<std::vector<std::string>>(
       6, {hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_EFFORT}))),
+    CallbackReturn::ERROR);
+}
+
+// F-447: the effort, after the velocity, on every joint or none.
+TEST(FairinoHardwareInterface, ExportsEffortWhenEveryJointDeclaresIt)
+{
+  fairino_hardware::FairinoHardwareInterface driver;
+  ASSERT_EQ(
+    driver.on_init(robotWith(std::vector<std::vector<std::string>>(6, POSITION_VELOCITY_AND_EFFORT))),
+    CallbackReturn::SUCCESS);
+
+  const auto names = stateNames(driver);
+  EXPECT_EQ(names.size(), 18u);
+  for (int j = 1; j <= 6; ++j) {
+    EXPECT_THAT(names, testing::Contains("j" + std::to_string(j) + "/effort"));
+  }
+}
+
+TEST(FairinoHardwareInterface, RefusesEffortOnSomeJointsOnly)
+{
+  std::vector<std::vector<std::string>> states(6, POSITION_VELOCITY_AND_EFFORT);
+  states[2] = POSITION_AND_VELOCITY;
+  fairino_hardware::FairinoHardwareInterface driver;
+  EXPECT_EQ(driver.on_init(robotWith(states)), CallbackReturn::ERROR);
+}
+
+TEST(FairinoHardwareInterface, RefusesAThirdStateInterfaceThatIsNotEffort)
+{
+  fairino_hardware::FairinoHardwareInterface driver;
+  EXPECT_EQ(
+    driver.on_init(robotWith(std::vector<std::vector<std::string>>(
+      6, {hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY,
+        hardware_interface::HW_IF_ACCELERATION}))),
     CallbackReturn::ERROR);
 }
 
@@ -384,6 +433,33 @@ TEST(FairinoHardwareInterface, ReadFailsAtOnceOnAnotherSpeedCode)
   ASSERT_EQ(arm.readAt(0), hardware_interface::return_type::OK);
   arm.script->speed_codes = {-4};
   EXPECT_EQ(arm.readAt(10), hardware_interface::return_type::ERROR);
+}
+
+// F-447: the measured torque is the effort, read as the speeds are; a -2 on
+// it is held through as theirs is, and a description without it never asks.
+TEST(FairinoHardwareInterface, ReadsTheMeasuredTorqueAsTheEffort)
+{
+  ActiveDriver arm(true, robotWith(std::vector<std::vector<std::string>>(
+    6, POSITION_VELOCITY_AND_EFFORT)));
+  ASSERT_EQ(arm.readAt(0), hardware_interface::return_type::OK);
+  EXPECT_THAT(arm.script->calls, testing::Contains("GetJointTorques 1"));
+  for (int j = 0; j < 6; ++j) {
+    EXPECT_FLOAT_EQ(arm.state("j" + std::to_string(j + 1) + "/effort"), arm.script->torques[j]);
+  }
+
+  arm.script->torque_codes = {-2};
+  arm.script->torques[1] = -3.0;
+  EXPECT_EQ(arm.readAt(10), hardware_interface::return_type::OK);
+  EXPECT_FLOAT_EQ(arm.state("j2/effort"), -2.5) << "the last good value, held";
+  EXPECT_EQ(arm.readAt(20), hardware_interface::return_type::OK);
+  EXPECT_FLOAT_EQ(arm.state("j2/effort"), -3.0);
+
+  arm.script->torque_codes = {-4};
+  EXPECT_EQ(arm.readAt(30), hardware_interface::return_type::ERROR);
+
+  ActiveDriver without;
+  ASSERT_EQ(without.readAt(0), hardware_interface::return_type::OK);
+  EXPECT_THAT(without.script->calls, testing::Not(testing::Contains("GetJointTorques 1")));
 }
 
 // A good cycle ends the episode: a second -2 later starts its own bound.

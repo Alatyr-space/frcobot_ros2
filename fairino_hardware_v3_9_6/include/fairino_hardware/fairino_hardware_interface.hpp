@@ -118,6 +118,9 @@ private:
   // F-204: whether the description declares a velocity state interface.
   // Exported, and read from the robot's feedback, only then.
   bool _export_velocity = false;
+  // F-447: whether it declares an effort state interface, after the
+  // velocity. Exported, and read from the robot's measured torque, only then.
+  bool _export_effort = false;
   std::string _controller_ip = CONTROLLER_IP_ADDRESS;
   RobotSdkFactory _sdk_factory;
   std::unique_ptr<RobotSdk> _ptr_robot;
