@@ -131,15 +131,18 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_init(const hardw
         const char * allowed = std::getenv(SERVOJ_REFUSAL_INJECTION_ENV);
         if (allowed == nullptr || allowed[0] == '\0' || allowed[0] == '0') {
             RCLCPP_FATAL(rclcpp::get_logger("FairinoHardwareInterface"),
-                        "servoj_refusal_injection is true, but %s is not set: the code-14 drill is "
-                        "a bench drill and is refused elsewhere", SERVOJ_REFUSAL_INJECTION_ENV);
+                        "servoj_refusal_injection is true, but %s is not set: the code-14 and "
+                        "read-error drills are bench drills and are refused elsewhere",
+                        SERVOJ_REFUSAL_INJECTION_ENV);
             return hardware_interface::CallbackReturn::ERROR;
         }
         _injection_available = true;
         RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"),
                     "servoj_refusal_injection is on: ~/inject_servoj_refusal (std_srvs/SetBool) makes "
-                    "write() send no ServoJ and read code 14, the arm still. A bench drill, never a "
-                    "production run");
+                    "write() send no ServoJ and read code 14, the arm still; "
+                    "~/inject_read_errors_under and ~/inject_read_errors_over (std_srvs/Trigger) make "
+                    "the next %d or %d state reads return -2. Bench drills, never a production run",
+                    readErrorsUnderTheBound(), readErrorsOverTheBound());
     }
 
     const auto step = info_.hardware_parameters.find("resume_max_step_rad");
@@ -229,6 +232,7 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_activate(const r
     _resume_hold = false;
     _hold_said = false;
     _injecting = false;
+    _read_errors_owed = 0;
     if (_injection_available && !_injection_service && get_node() != nullptr) {
         _injection_service = get_node()->create_service<std_srvs::srv::SetBool>(
             "~/inject_servoj_refusal",
@@ -237,6 +241,19 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_activate(const r
                 response->success = injectServoJRefusal(request->data);
                 response->message = request->data ? "ServoJ refusal drill on" : "ServoJ refusal drill off";
             });
+    }
+    if (_injection_available && !_read_errors_under_service && get_node() != nullptr) {
+        auto arm = [this](int reads) {
+                return [this, reads](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+                                     std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+                    response->success = injectReadErrors(reads);
+                    response->message = std::to_string(reads) + " state reads of -2 armed";
+                };
+            };
+        _read_errors_under_service = get_node()->create_service<std_srvs::srv::Trigger>(
+            "~/inject_read_errors_under", arm(readErrorsUnderTheBound()));
+        _read_errors_over_service = get_node()->create_service<std_srvs::srv::Trigger>(
+            "~/inject_read_errors_over", arm(readErrorsOverTheBound()));
     }
     if (!_diagnostic_sink) {
         // F-226: the contract on /diagnostics, from the component's own node
@@ -336,8 +353,13 @@ bool FairinoHardwareInterface::acceptReadCode(errno_t code, const char * what, c
 hardware_interface::return_type FairinoHardwareInterface::read(const rclcpp::Time& time,const rclcpp::Duration& period)
 {//从RTDE反馈数据中获取所需的位置，速度和扭矩信息
     bool transient = false;
+    // The read-error drill: this cycle's reads answer -2 without the SDK.
+    int owed = _read_errors_owed.load();
+    while (owed > 0 && !_read_errors_owed.compare_exchange_weak(owed, owed - 1)) {
+    }
+    const bool drilled = owed > 0;
     JointPos state_data;
-    error_t returncode = _ptr_robot->GetActualJointPosDegree(1,&state_data);
+    error_t returncode = drilled ? ERR_SOCKET_COM_FAILED : _ptr_robot->GetActualJointPosDegree(1,&state_data);
     if(returncode == 0){
         for(int i=0;i<6;i++){
             _jnt_position_state[i] = state_data.jPos[i]/180.0*M_PI;//注意单位转换，moveit统一用弧度
@@ -353,7 +375,7 @@ hardware_interface::return_type FairinoHardwareInterface::read(const rclcpp::Tim
         // non-blocking, the same packet as the positions), never a finite
         // difference of positions.
         float speed[6];
-        returncode = _ptr_robot->GetActualJointSpeedsDegree(1, speed);
+        returncode = drilled ? ERR_SOCKET_COM_FAILED : _ptr_robot->GetActualJointSpeedsDegree(1, speed);
         if (returncode == 0) {
             for (int i = 0; i < 6; i++) {
                 if (!std::isfinite(speed[i])) {
@@ -393,6 +415,28 @@ bool FairinoHardwareInterface::injectServoJRefusal(bool on)
                 "ServoJ refusal drill %s", on ? "ON: no ServoJ is sent, every cycle reads as code 14"
                                               : "off: ServoJ is sent again");
     return true;
+}
+
+bool FairinoHardwareInterface::injectReadErrors(int reads)
+{
+    if (!_injection_available || reads < 1) {
+        return false;
+    }
+    _read_errors_owed = reads;
+    RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"),
+                "read-error drill: the next %d state reads return -2 (the bound is %ld ms)", reads,
+                static_cast<long>(_transient_read_error_tolerance_ns / 1000000));
+    return true;
+}
+
+int FairinoHardwareInterface::readErrorsUnderTheBound() const
+{
+    return std::max<int64_t>(1, _transient_read_error_tolerance_ns / 20000000);
+}
+
+int FairinoHardwareInterface::readErrorsOverTheBound() const
+{
+    return std::max<int64_t>(2, _transient_read_error_tolerance_ns / 5000000);
 }
 
 diagnostic_msgs::msg::DiagnosticStatus FairinoHardwareInterface::servoJStatus() const

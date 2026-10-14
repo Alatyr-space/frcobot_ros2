@@ -275,13 +275,14 @@ TEST(FairinoHardwareInterface, ThePluginStillLoadsByName)
 struct ActiveDriver
 {
   explicit ActiveDriver(bool velocity = true)
+  : ActiveDriver(velocity, robotWith(std::vector<std::vector<std::string>>(
+        6, velocity ? POSITION_AND_VELOCITY : POSITION_ONLY))) {}
+
+  ActiveDriver(bool, const hardware_interface::HardwareInfo & description)
   : script(std::make_shared<SdkScript>()),
     driver(fakeSdk(script))
   {
-    EXPECT_EQ(
-      driver.on_init(robotWith(std::vector<std::vector<std::string>>(
-        6, velocity ? POSITION_AND_VELOCITY : POSITION_ONLY))),
-      CallbackReturn::SUCCESS);
+    EXPECT_EQ(driver.on_init(description), CallbackReturn::SUCCESS);
     states = driver.export_state_interfaces();
     commands = driver.export_command_interfaces();
     EXPECT_EQ(driver.on_activate(INACTIVE), CallbackReturn::SUCCESS);
@@ -783,6 +784,82 @@ TEST(FairinoHardwareInterface, TheDrillRefusesWithoutCallingServoJAndEndsWhenOff
   EXPECT_THAT(script->calls, testing::Contains("ServoJ"));
   EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_WARN, {"accepted again after 10 refusals"}), 1);
   EXPECT_EQ(published.back().level, diagnostic_msgs::msg::DiagnosticStatus::OK);
+  unsetenv(INJECTION_ENV);
+}
+
+// --- the read-error drill (row 0.F6, F-466) ---------------------------------
+
+// The drill's driver: the description and the environment both allow it.
+struct DrilledDriver : ActiveDriver
+{
+  DrilledDriver()
+  : ActiveDriver(true, drillDescription()) {}
+};
+
+TEST(FairinoHardwareInterface, TheReadErrorDrillIsUnavailableUnlessDescribed)
+{
+  setenv(INJECTION_ENV, "1", 1);
+  ActiveDriver arm;
+  EXPECT_FALSE(arm.driver.injectReadErrors(5));
+  ASSERT_EQ(arm.readAt(0), hardware_interface::return_type::OK);
+  EXPECT_THAT(arm.script->calls, testing::Contains("GetActualJointPosDegree 1"));
+  unsetenv(INJECTION_ENV);
+}
+
+// The counts the services arm: half the 100 ms bound and twice it, in 10 ms
+// cycles; a bound of the description's moves them.
+TEST(FairinoHardwareInterface, TheReadErrorCountsFollowTheBound)
+{
+  setenv(INJECTION_ENV, "1", 1);
+  DrilledDriver arm;
+  EXPECT_EQ(arm.driver.readErrorsUnderTheBound(), 5);
+  EXPECT_EQ(arm.driver.readErrorsOverTheBound(), 20);
+  auto info = drillDescription();
+  info.hardware_parameters["transient_read_error_tolerance_ms"] = "40";
+  fairino_hardware::FairinoHardwareInterface narrow(fakeSdk(arm.script));
+  ASSERT_EQ(narrow.on_init(info), CallbackReturn::SUCCESS);
+  EXPECT_EQ(narrow.readErrorsUnderTheBound(), 2);
+  EXPECT_EQ(narrow.readErrorsOverTheBound(), 8);
+  EXPECT_FALSE(arm.driver.injectReadErrors(0));
+  unsetenv(INJECTION_ENV);
+}
+
+// Under the bound: the reads answer -2 without the SDK, the last good state
+// is held, and the next cycle reads the arm again and says it recovered.
+TEST(FairinoHardwareInterface, TheReadErrorDrillUnderTheBoundIsHeldThrough)
+{
+  setenv(INJECTION_ENV, "1", 1);
+  DrilledDriver arm;
+  LogCapture log;
+  ASSERT_EQ(arm.readAt(0), hardware_interface::return_type::OK);
+  arm.script->joint_degrees[0] = 11.0;
+  arm.script->calls.clear();
+  ASSERT_TRUE(arm.driver.injectReadErrors(arm.driver.readErrorsUnderTheBound()));
+  for (int64_t ms = 10; ms <= 50; ms += 10) {
+    EXPECT_EQ(arm.readAt(ms), hardware_interface::return_type::OK) << "at " << ms << " ms";
+    EXPECT_NEAR(arm.state("j1/position"), 10.0 * DEG, 1e-12) << "held at " << ms << " ms";
+  }
+  EXPECT_TRUE(arm.script->calls.empty()) << "the drill never reads the SDK";
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_WARN, {"failed: -2, the last good state held"}), 1);
+
+  EXPECT_EQ(arm.readAt(60), hardware_interface::return_type::OK);
+  EXPECT_NEAR(arm.state("j1/position"), 11.0 * DEG, 1e-12);
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_WARN, {"read recovered after 5 failures over 50 ms"}), 1);
+  unsetenv(INJECTION_ENV);
+}
+
+// Over the bound: read() fails as a real outage past 100 ms would, and
+// ros2_control deactivates the arm.
+TEST(FairinoHardwareInterface, TheReadErrorDrillOverTheBoundFailsTheRead)
+{
+  setenv(INJECTION_ENV, "1", 1);
+  DrilledDriver arm;
+  ASSERT_EQ(arm.readAt(0), hardware_interface::return_type::OK);
+  ASSERT_TRUE(arm.driver.injectReadErrors(arm.driver.readErrorsOverTheBound()));
+  for (int64_t ms = 10; ms <= 110; ms += 10) {
+    EXPECT_EQ(arm.readAt(ms), hardware_interface::return_type::OK) << "at " << ms << " ms";
+  }
+  EXPECT_EQ(arm.readAt(120), hardware_interface::return_type::ERROR);
   unsetenv(INJECTION_ENV);
 }
 
