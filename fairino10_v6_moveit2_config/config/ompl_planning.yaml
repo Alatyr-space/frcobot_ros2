@@ -1,0 +1,25 @@
+# The OMPL pipeline: moveit_configs_utils' default_configs/ompl_planning.yaml
+# at MoveIt 2.12.4, unchanged, and one value more. MoveItConfigsBuilder loads
+# this file in place of that default; planner_configs is left out on purpose,
+# so the builder still adds its ompl_defaults.yaml.
+planning_plugins:
+  - ompl_interface/OMPLPlanner
+# The order of the elements in the adapter corresponds to the order they are processed by the motion planning pipeline.
+request_adapters:
+  - default_planning_request_adapters/ResolveConstraintFrames
+  - default_planning_request_adapters/ValidateWorkspaceBounds
+  - default_planning_request_adapters/CheckStartStateBounds
+  - default_planning_request_adapters/CheckStartStateCollision
+response_adapters:
+  - default_planning_response_adapters/AddTimeOptimalParameterization
+  - default_planning_response_adapters/ValidateSolution
+  - default_planning_response_adapters/DisplayMotionPath
+
+# AN-017, the owner's repair (bench visit 21, 2026-10-14): read by
+# AddTimeOptimalParameterization as ompl.totg.min_angle_change. A waypoint is
+# kept only when some joint moved more than this since the last one kept, and
+# with one point left the trajectory is the start alone: at 0.001 (MoveIt's
+# default), a 1 mm move turning j2 by 0.00095 rad was planned as no move at
+# all. 1e-5 keeps it. path_tolerance and resample_dt keep their defaults.
+totg:
+  min_angle_change: 1.0e-5
