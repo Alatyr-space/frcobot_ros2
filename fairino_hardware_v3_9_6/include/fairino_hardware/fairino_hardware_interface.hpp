@@ -14,6 +14,7 @@
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "fairino_hardware/refusal_episode.hpp"
+#include "fairino_hardware/resume_hold.hpp"
 #include "realtime_tools/realtime_publisher.hpp"
 #include <atomic>
 #include <functional>
@@ -136,12 +137,12 @@ private:
   void noteServoJ(int code, const rclcpp::Time & time);
 
   // Q-C1 (a), the owner's: once a refusal episode has begun, and until the
-  // command is back within this of the measured position on every joint,
-  // write() sends the measured position -- a hold. The controller executes
-  // whatever it is sent the moment it accepts again; this only ever
-  // withholds motion.
-  double _resume_max_step_rad = 0.01;
-  bool _resume_hold = false;
+  // command is back within resume_max_step_rad (0.01) of the measured
+  // position on every joint, write() sends a hold instead of the command.
+  // The controller executes whatever it is sent the moment it accepts
+  // again; this only ever withholds motion. AN-023: the hold's target is
+  // latched, never the live measurement (resume_hold.hpp).
+  ResumeHold _hold{0.01};
   bool _hold_said = false;
 
   // The code-14 drill: allowed by the description and the environment at

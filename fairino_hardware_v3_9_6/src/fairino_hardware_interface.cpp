@@ -176,7 +176,7 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_init(const hardw
                         step->second.c_str());
             return hardware_interface::CallbackReturn::ERROR;
         }
-        _resume_max_step_rad = rad;
+        _hold = ResumeHold(rad);
     }
     return hardware_interface::CallbackReturn::SUCCESS;
 }//end on_init
@@ -244,7 +244,7 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_activate(const r
     }
     _read_failing = false;
     _refusal = RefusalEpisode();
-    _resume_hold = false;
+    _hold.reset();
     _hold_said = false;
     _injecting = false;
     _read_errors_owed = 0;
@@ -504,7 +504,7 @@ void FairinoHardwareInterface::noteServoJ(int code, const rclcpp::Time & time)
 {
     const auto event = _refusal.observe(code, time.nanoseconds());
     if (event == RefusalEpisode::Event::Started) {
-        _resume_hold = true;
+        _hold.episodeStarted();
     }
     if (event == RefusalEpisode::Event::Started || event == RefusalEpisode::Event::CodeChanged) {
         // The vendor's own text kept beside the English: every row and sheet
@@ -537,28 +537,22 @@ hardware_interface::return_type FairinoHardwareInterface::write(const rclcpp::Ti
         }
         JointPos cmd;
         ExaxisPos extcmd{0,0,0,0};
-        for(auto j=0;j<6;j++){
-            cmd.jPos[j] = _jnt_position_command[j]/M_PI*180; //注意单位转换
+        // Q-C1 (a): after a refusal episode, a hold until the command is
+        // near the arm. AN-023: its target is latched at the controller's
+        // first acceptance, never the measurement read again each cycle --
+        // that closed a loop through the controller and the arm oscillated.
+        double target[6];
+        const bool holding = _hold.apply(_jnt_position_command, _jnt_position_state, _refusal.active(), target);
+        if (holding && !_hold_said) {
+            RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"),
+                        "holding the arm: the command is %.3f rad from it after a refusal episode",
+                        _hold.farthest());
+            _hold_said = true;
+        } else if (!holding && !_hold.armed()) {
+            _hold_said = false;
         }
-        if (_resume_hold) {
-            double farthest = 0.0;
-            for (int j = 0; j < 6; j++) {
-                farthest = std::max(farthest, std::abs(_jnt_position_command[j] - _jnt_position_state[j]));
-            }
-            if (farthest > _resume_max_step_rad) {
-                if (!_hold_said) {
-                    RCLCPP_WARN(rclcpp::get_logger("FairinoHardwareInterface"),
-                                "holding the arm: the command is %.3f rad from it after a refusal episode",
-                                farthest);
-                    _hold_said = true;
-                }
-                for (int j = 0; j < 6; j++) {
-                    cmd.jPos[j] = _jnt_position_state[j]/M_PI*180;
-                }
-            } else if (!_refusal.active()) {
-                _resume_hold = false;
-                _hold_said = false;
-            }
+        for(auto j=0;j<6;j++){
+            cmd.jPos[j] = target[j]/M_PI*180; //注意单位转换
         }
         //RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "ServoJ下发位置:%f,%f,%f,%f,%f,%f",\
             cmd.jPos[0],cmd.jPos[1],cmd.jPos[2],cmd.jPos[3],cmd.jPos[4],cmd.jPos[5]);

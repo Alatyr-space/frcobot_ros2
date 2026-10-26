@@ -149,6 +149,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_fairino_hardware_interface fairino_hardware)
   ament_target_dependencies(test_fairino_hardware_interface
     diagnostic_msgs hardware_interface pluginlib rclcpp rclcpp_lifecycle)
+
+  # AN-023: the resume hold's policy alone, no ROS and no SDK (resume_hold.hpp).
+  ament_add_gmock(test_resume_hold test/test_resume_hold.cpp)
+  target_include_directories(test_resume_hold PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 endif()
 
 #export
