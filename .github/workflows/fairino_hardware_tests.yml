@@ -1,0 +1,40 @@
+# The driver's own tests (fairino_hardware_v3_9_6/test/), built and run in
+# the ROS 2 Jazzy image on every pull request. The bench repository's CI
+# never builds this submodule (its ros job prunes frcobot_ros2), so until
+# this workflow existed the driver's tests ran only by hand on the bench PC.
+# Only the driver's two test binaries run: the vendor's packages were never
+# written for ament's linters.
+name: fairino_hardware tests
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: ros:jazzy-ros-base
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies (rosdep, the two packages' own)
+        shell: bash
+        run: |
+          apt-get update
+          rosdep update --rosdistro jazzy
+          rosdep install --from-paths fairino_msgs fairino_hardware_v3_9_6 --ignore-src -y \
+            --rosdistro jazzy --skip-keys "ament_lint_common ament_lint_auto"
+          apt-get install -y --no-install-recommends ros-jazzy-ament-cmake-gmock
+      - name: Build fairino_msgs and fairino_hardware_v3_9_6
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --packages-up-to fairino_hardware_v3_9_6 --event-handlers console_cohesion+
+      - name: Run the driver's tests
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          colcon test --packages-select fairino_hardware_v3_9_6 --event-handlers console_cohesion+ \
+            --ctest-args -R "test_fairino_hardware_interface|test_resume_hold"
+          colcon test-result --verbose
