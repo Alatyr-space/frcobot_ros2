@@ -785,6 +785,54 @@ TEST(FairinoHardwareInterface, TheResumeStepIsAHardwareParameter)
   EXPECT_NEAR(script->servo_degrees.back()[1], -20.0 + 0.2 / DEG, 1e-9);
 }
 
+// AN-023 (bench visit 30, 2026-10-26): with the Arm module running, a
+// pendant jog left the arm oscillating until the module was restarted. The
+// hold above sent the *measured* position, read again every cycle: the
+// state port showed each ServoJ target equal to the position measured one
+// frame before, a loop closed through the controller. A still arm, held
+// after a jog, is sent one target -- the hold's, latched at the controller's
+// first acceptance -- whatever its measurement does; and the hold still
+// stands until the command is near, and still lets go then.
+TEST(FairinoHardwareInterface, TheHoldSendsOneTargetToAStillArm)
+{
+  ServoingDriver arm;
+  LogCapture log;
+  // The controllers' command is where the arm is, as after any goal.
+  for (int j = 0; j < 6; ++j) {
+    arm.command(j, arm.script->joint_degrees[j] * DEG);
+  }
+  ASSERT_EQ(arm.cycleAt(0), hardware_interface::return_type::OK);
+  // A pendant jog of 1 deg on j3 over five refused cycles.
+  arm.script->servo_codes = std::deque<int>(5, 14);
+  for (int64_t ms = 10; ms <= 50; ms += 10) {
+    arm.script->joint_degrees[2] += 0.2;
+    ASSERT_EQ(arm.cycleAt(ms), hardware_interface::return_type::OK);
+  }
+  // Accepted again at 60 ms: that ServoJ is where the controller puts the arm.
+  ASSERT_EQ(arm.cycleAt(60), hardware_interface::return_type::OK);
+  const std::vector<double> frozen = arm.script->servo_degrees.back();
+  EXPECT_NEAR(frozen[2], 30.0 + 1.0, 1e-9) << "the jogged position, never the pre-jog command";
+  // 300 cycles with the arm still: the controller executes the last target
+  // with one cycle of delay, and the measurement carries +-0.01 deg.
+  for (int64_t cycle = 0; cycle < 300; ++cycle) {
+    const auto & last = arm.script->servo_degrees.back();
+    for (int j = 0; j < 6; ++j) {
+      arm.script->joint_degrees[j] = last[j] + ((cycle % 2) ? 0.01 : -0.01);
+    }
+    ASSERT_EQ(arm.cycleAt(70 + cycle * 10), hardware_interface::return_type::OK);
+    EXPECT_NEAR(arm.script->servo_degrees.back()[2], frozen[2], 1e-9)
+      << "cycle " << cycle << ": the measurement fed back";
+  }
+  EXPECT_EQ(log.count(RCUTILS_LOG_SEVERITY_WARN, {"holding the arm"}), 1);
+  // The next goal starts from the measured state: let go.
+  for (int j = 0; j < 6; ++j) {
+    arm.command(j, arm.script->joint_degrees[j] * DEG + 0.005);
+  }
+  ASSERT_EQ(arm.cycleAt(4000), hardware_interface::return_type::OK);
+  EXPECT_NEAR(arm.script->servo_degrees.back()[2], arm.script->joint_degrees[2] + 0.005 / DEG, 1e-9)
+    << "let go";
+}
+
 // --- the code-14 drill (row 0.F7) ------------------------------------------
 
 constexpr const char * INJECTION_ENV = "FAIRINO_HARDWARE_ALLOW_SERVOJ_REFUSAL_INJECTION";
