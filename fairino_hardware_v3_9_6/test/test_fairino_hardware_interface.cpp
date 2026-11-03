@@ -73,7 +73,8 @@ const std::vector<std::string> POSITION_VELOCITY_AND_EFFORT{
   hardware_interface::HW_IF_EFFORT};
 
 // What the fake SDK was asked, and what it answers. Shared with the test, so
-// it outlives the fake (on_deactivate releases the SDK without deleting it).
+// it outlives the fake (the driver lets go of the SDK without deleting it,
+// AN-022).
 struct SdkScript
 {
   std::vector<std::string> calls;
@@ -81,12 +82,14 @@ struct SdkScript
   float speed_degrees[6]{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
   float torques[6]{1.5, -2.5, 3.5, -4.5, 5.5, -6.5};
   // Codes to return, one per call, before falling back to 0.
+  std::deque<int> rpc_codes;
   std::deque<int> position_codes;
   std::deque<int> speed_codes;
   std::deque<int> torque_codes;
   std::deque<int> servo_codes;
   std::vector<std::vector<double>> servo_degrees;
-  // How many fake SDK objects were built, and how many deleted (F-417).
+  // How many fake SDK objects were built, and how many deleted (F-417,
+  // AN-022).
   int built = 0;
   int destroyed = 0;
 };
@@ -101,7 +104,7 @@ public:
   errno_t RPC(const char * ip) override
   {
     script_->calls.push_back(std::string("RPC ") + ip);
-    return 0;
+    return next(script_->rpc_codes);
   }
   errno_t CloseRPC() override {return record("CloseRPC");}
   errno_t StopMotion() override {return record("StopMotion");}
@@ -987,10 +990,14 @@ TEST(FairinoHardwareInterface, TheReadErrorDrillOverTheBoundFailsTheRead)
   unsetenv(INJECTION_ENV);
 }
 
-// F-417: on_deactivate called `_ptr_robot.release()`, which drops the SDK
-// object without deleting it: one leaked per deactivation. Each activation
-// builds one; each deactivation must delete it.
-TEST(FairinoHardwareInterface, DeactivatingDeletesTheSdkObject)
+// AN-022 / BUG-038 (the owner's choice, 2026-11-03), replacing F-417's
+// DeactivatingDeletesTheSdkObject: libfairino's CloseRPC() leaves the SDK's
+// CNDE state receiver running, and deleting the FRRobot freed memory under it
+// (ros2_control_node crashed at 5 of 7 Arm stops, visit 28). Each activation
+// builds one SDK object; no deactivation deletes it, and neither does the
+// driver's own destruction. INTERIM(T5): removed with the keep-alive, by a
+// libfairino whose CloseRPC() stops its CNDE and UDP receivers.
+TEST(FairinoHardwareInterface, DeactivatingKeepsTheSdkObjectAlive)
 {
   auto script = std::make_shared<SdkScript>();
   {
@@ -1006,10 +1013,49 @@ TEST(FairinoHardwareInterface, DeactivatingDeletesTheSdkObject)
       ASSERT_EQ(driver.on_activate(INACTIVE), CallbackReturn::SUCCESS);
       ASSERT_EQ(driver.on_deactivate(active), CallbackReturn::SUCCESS);
       EXPECT_EQ(script->built, cycle);
-      EXPECT_EQ(script->destroyed, cycle) << "the SDK object of activation " << cycle << " leaked";
+      EXPECT_EQ(script->destroyed, 0) << "the SDK object of activation " << cycle << " was deleted";
     }
     EXPECT_THAT(script->calls, testing::Contains("StopMotion"));
     EXPECT_THAT(script->calls, testing::Contains("CloseRPC"));
   }
-  EXPECT_EQ(script->destroyed, script->built);
+  EXPECT_EQ(script->built, 2);
+  EXPECT_EQ(script->destroyed, 0) << "the driver's destruction deleted an SDK object";
+}
+
+// AN-022: the paths that never reach on_deactivate keep it alive too -- an
+// active driver destroyed (the plugin's teardown), a failed connection
+// (RPC() may have started threads) followed by another activation, and
+// error, cleanup and shutdown.
+TEST(FairinoHardwareInterface, NoPathDeletesTheSdkObject)
+{
+  auto script = std::make_shared<SdkScript>();
+  const rclcpp_lifecycle::State active(
+    lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "active");
+  const auto described = robotWith(std::vector<std::vector<std::string>>(6, POSITION_ONLY));
+  auto quiet = [](const diagnostic_msgs::msg::DiagnosticStatus &) {return true;};
+  {
+    fairino_hardware::FairinoHardwareInterface driver(fakeSdk(script), quiet);
+    ASSERT_EQ(driver.on_init(described), CallbackReturn::SUCCESS);
+    auto commands = driver.export_command_interfaces();
+    ASSERT_EQ(driver.on_activate(INACTIVE), CallbackReturn::SUCCESS);
+  }
+  EXPECT_EQ(script->built, 1);
+  EXPECT_EQ(script->destroyed, 0) << "destroying an active driver deleted its SDK object";
+  {
+    fairino_hardware::FairinoHardwareInterface driver(fakeSdk(script), quiet);
+    ASSERT_EQ(driver.on_init(described), CallbackReturn::SUCCESS);
+    auto commands = driver.export_command_interfaces();
+    script->rpc_codes.push_back(-4);
+    ASSERT_EQ(driver.on_activate(INACTIVE), CallbackReturn::ERROR);
+    ASSERT_EQ(driver.on_activate(INACTIVE), CallbackReturn::SUCCESS);
+    EXPECT_EQ(script->built, 3);
+    EXPECT_EQ(script->destroyed, 0) << "the next activation deleted a failed one's SDK object";
+    driver.on_error(active);
+    ASSERT_EQ(driver.on_activate(INACTIVE), CallbackReturn::SUCCESS);
+    driver.on_cleanup(INACTIVE);
+    ASSERT_EQ(driver.on_activate(INACTIVE), CallbackReturn::SUCCESS);
+    driver.on_shutdown(INACTIVE);
+  }
+  EXPECT_EQ(script->built, 5);
+  EXPECT_EQ(script->destroyed, 0) << "error, cleanup, shutdown or the destructor deleted one";
 }
