@@ -51,6 +51,11 @@ public:
   FAIRINO_HARDWARE_PUBLIC
   FairinoHardwareInterface(RobotSdkFactory sdk_factory, DiagnosticSink diagnostic_sink);
 
+  // AN-022 / BUG-038: the SDK object is never deleted, here included (see
+  // keepTheSdkAlive()).
+  FAIRINO_HARDWARE_PUBLIC
+  ~FairinoHardwareInterface() override;
+
   // The bench's code-14 drill (row 0.F7, the owner's choice of 2026-10-11):
   // while on, write() sends no ServoJ and takes the answer as code 14, so the
   // whole chain is walked with the arm still. Available only with the
@@ -86,6 +91,17 @@ public:
   
   FAIRINO_HARDWARE_PUBLIC
   hardware_interface::CallbackReturn on_deactivate(const rclcpp_lifecycle::State& previous_state) override;
+
+  // AN-022 / BUG-038: each only lets go of the SDK object without deleting
+  // it, then answers as the base class does.
+  FAIRINO_HARDWARE_PUBLIC
+  hardware_interface::CallbackReturn on_cleanup(const rclcpp_lifecycle::State& previous_state) override;
+
+  FAIRINO_HARDWARE_PUBLIC
+  hardware_interface::CallbackReturn on_shutdown(const rclcpp_lifecycle::State& previous_state) override;
+
+  FAIRINO_HARDWARE_PUBLIC
+  hardware_interface::CallbackReturn on_error(const rclcpp_lifecycle::State& previous_state) override;
   
   FAIRINO_HARDWARE_PUBLIC
   std::vector<hardware_interface::StateInterface> export_state_interfaces() override;
@@ -125,6 +141,10 @@ private:
   std::string _controller_ip = CONTROLLER_IP_ADDRESS;
   RobotSdkFactory _sdk_factory;
   std::unique_ptr<RobotSdk> _ptr_robot;
+  // INTERIM(T5): the SDK object kept alive for the process's life -- removed
+  // by a libfairino whose CloseRPC() stops its CNDE and UDP receivers.
+  // Lets go of _ptr_robot without deleting it; see the .cpp.
+  void keepTheSdkAlive();
   DiagnosticSink _diagnostic_sink;
 
   // F-226: ServoJ's refusals, as episodes. One ERROR line at the onset (and

@@ -24,6 +24,33 @@ FairinoHardwareInterface::FairinoHardwareInterface(
 {
 }
 
+FairinoHardwareInterface::~FairinoHardwareInterface()
+{
+    // The implicit destructor would delete the SDK object at the plugin's
+    // teardown, with its detached threads still running (AN-022).
+    keepTheSdkAlive();
+}
+
+// INTERIM(T5): the SDK object kept alive for the process's life -- removed by
+// a libfairino whose CloseRPC() stops its CNDE and UDP receivers.
+//
+// AN-022 / BUG-038 (the owner's choice, 2026-11-03): libfairino's RPC()
+// starts detached threads, among them FRCNDEClient::RecvRobotStateThread,
+// the receiver of the controller's state stream. CloseRPC() never stops it
+// (nothing in libfairino.so.2.3.6 calls FRCNDEClient::Close or SetCNDEStop),
+// and ~FRRobot frees the client, its map and its vector under it: a
+// use-after-free that crashed ros2_control_node at most Arm stops (visit 28,
+// 5 of 7). So the object is never deleted -- not at deactivate (this undoes
+// F-417's reset()), nor at cleanup, shutdown, error, the next activation or
+// the destructor. The cost is one SDK object, and its idle threads, per
+// activation, until the process ends. Released, not moved into a static
+// container: a static's destructor would run ~FRRobot in exit()'s handlers,
+// which is where four of the five dumps were.
+void FairinoHardwareInterface::keepTheSdkAlive()
+{
+    static_cast<void>(_ptr_robot.release());
+}
+
 hardware_interface::CallbackReturn FairinoHardwareInterface::on_init(const hardware_interface::HardwareInfo& sysinfo){
     if (hardware_interface::SystemInterface::on_init(sysinfo) != hardware_interface::CallbackReturn::SUCCESS) {
         return hardware_interface::CallbackReturn::ERROR;
@@ -228,6 +255,10 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_activate(const r
     using namespace std::chrono_literals;
     RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "Starting ...please wait...");
     //做变量的初始化工作
+    // A previous activation that failed after RPC() left its SDK object here,
+    // its threads perhaps started: let go of it rather than delete it when
+    // the new one is assigned (AN-022).
+    keepTheSdkAlive();
     try {
         _ptr_robot = _sdk_factory();//创建机器人实例
     } catch (const std::exception & error) {
@@ -329,11 +360,31 @@ hardware_interface::CallbackReturn FairinoHardwareInterface::on_deactivate(const
     RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "Stopping ...please wait...");
     _ptr_robot->StopMotion();//停止机器人
     _ptr_robot->CloseRPC();//销毁实例，连接断开
-    // F-417: reset(), not release(): release() dropped the SDK object
-    // without deleting it, one leaked per deactivation.
-    _ptr_robot.reset();
+    // INTERIM(T5): kept alive, not deleted -- removed by a libfairino whose
+    // CloseRPC() stops its CNDE and UDP receivers. F-417's reset() deleted
+    // it here, and the CNDE receiver CloseRPC() leaves running read the
+    // freed object (AN-022 / BUG-038).
+    keepTheSdkAlive();
     RCLCPP_INFO(rclcpp::get_logger("FairinoHardwareInterface"), "System successfully stopped!");
     return hardware_interface::CallbackReturn::SUCCESS;
+}
+
+hardware_interface::CallbackReturn FairinoHardwareInterface::on_cleanup(const rclcpp_lifecycle::State& previous_state)
+{
+    keepTheSdkAlive();
+    return hardware_interface::SystemInterface::on_cleanup(previous_state);
+}
+
+hardware_interface::CallbackReturn FairinoHardwareInterface::on_shutdown(const rclcpp_lifecycle::State& previous_state)
+{
+    keepTheSdkAlive();
+    return hardware_interface::SystemInterface::on_shutdown(previous_state);
+}
+
+hardware_interface::CallbackReturn FairinoHardwareInterface::on_error(const rclcpp_lifecycle::State& previous_state)
+{
+    keepTheSdkAlive();
+    return hardware_interface::SystemInterface::on_error(previous_state);
 }
 
 
